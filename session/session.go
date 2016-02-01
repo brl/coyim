@@ -29,6 +29,11 @@ const (
 	CONNECTED
 )
 
+// Connector represents something that connect
+type Connector interface {
+	Connect()
+}
+
 // Session contains information about one specific connection
 type Session struct {
 	Conn             *xmpp.Conn
@@ -49,10 +54,14 @@ type Session struct {
 	// absolute time when that request should timeout.
 	timeouts map[xmpp.Cookie]time.Time
 
-	// lastActionTime is the time at which the user last entered a command,
+	// LastActionTime is the time at which the user last entered a command,
 	// or was last notified.
 	LastActionTime      time.Time
 	SessionEventHandler EventHandler
+
+	// WantToBeOnline keeps track of whether a user has expressed a wish
+	// to be online - if it's true, it will do more aggressive reconnecting
+	WantToBeOnline bool
 
 	subscribers struct {
 		sync.RWMutex
@@ -62,6 +71,9 @@ type Session struct {
 	GroupDelimiter string
 
 	xmppLogger io.Writer
+
+	// Connector is something that can connect
+	Connector Connector
 
 	client.CommandManager
 	client.ConversationManager
@@ -104,12 +116,18 @@ func NewSession(c *config.ApplicationConfig, cu *config.Account) *Session {
 		xmppLogger: openLogFile(c.RawLogFile),
 	}
 
-	s.PrivateKeys = parseFromConfig(cu)
+	s.ReloadKeys()
 	s.ConversationManager = client.NewConversationManager(s, s)
 
 	go observe(s)
+	go checkReconnect(s)
 
 	return s
+}
+
+// ReloadKeys will reload the keys from the configuration
+func (s *Session) ReloadKeys() {
+	s.PrivateKeys = parseFromConfig(s.accountConfig)
 }
 
 // Send will send the given message to the receiver given
@@ -217,7 +235,8 @@ func (s *Session) receivedClientPresence(stanza *xmpp.ClientPresence) bool {
 	case "unsubscribed":
 		// Ignore
 	case "error":
-		s.warn(fmt.Sprintf("Got a presence error from %s: %s\n", stanza.From, stanza.Error))
+		s.warn(fmt.Sprintf("Got a presence error from %s: %#v\n", stanza.From, stanza.Error))
+		s.R.LatestError(stanza.From, stanza.Error.Code, stanza.Error.Type, stanza.Error.Any.Space+" "+stanza.Error.Any.Local)
 	default:
 		s.info(fmt.Sprintf("unrecognized presence: %#v", stanza))
 	}

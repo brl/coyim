@@ -29,11 +29,10 @@ func (u *gtkUI) connectWithPassword(account *account, password string) error {
 	err := account.session.Connect(password)
 	switch err {
 	case config.ErrTorNotRunning:
-		doInUIThread(u.alertTorIsNotRunning)
+		u.notifyTorIsNotRunning(account)
 	case xmpp.ErrTCPBindingFailed:
-		u.askForServerDetailsAndConnect(account, password)
+		u.notifyConnectionFailure(account)
 	case xmpp.ErrAuthenticationFailed:
-		//TODO: notify authentication failure?
 		u.askForPasswordAndConnect(account)
 	case xmpp.ErrConnectionFailed:
 		u.notifyConnectionFailure(account)
@@ -51,20 +50,12 @@ func (u *gtkUI) askForPasswordAndConnect(account *account) {
 	})
 }
 
-func (u *gtkUI) askForServerDetailsAndConnect(account *account, password string) {
-	conf := account.session.GetConfig()
-	doInUIThread(func() {
-		u.askForServerDetails(conf, func() error {
-			return u.connectWithPassword(account, password)
-		})
-	})
-}
-
 func (u *gtkUI) connectWithRandomDelay(a *account) {
 	sleepDelay := time.Duration(rand.Int31n(7643)) * time.Millisecond
 	log.Printf("connectWithRandomDelay(%v, %vms)\n", a.session.GetConfig().Account, sleepDelay)
 	time.Sleep(sleepDelay)
-	a.connect()
+	a.session.WantToBeOnline = true
+	a.Connect()
 }
 
 func (u *gtkUI) connectAllAutomatics(all bool) {

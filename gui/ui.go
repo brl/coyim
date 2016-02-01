@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/twstrike/coyim/config"
@@ -38,6 +37,7 @@ type gtkUI struct {
 	tags *tags
 
 	toggleConnectAllAutomaticallyRequest chan bool
+	setShowAdvancedSettingsRequest       chan bool
 
 	commands chan interface{}
 }
@@ -66,9 +66,9 @@ func NewGTK(version string) UI {
 	ret := &gtkUI{
 		commands: make(chan interface{}, 5),
 		toggleConnectAllAutomaticallyRequest: make(chan bool, 100),
+		setShowAdvancedSettingsRequest:       make(chan bool, 100),
 	}
 
-	ret.applyStyle()
 	ret.keySupplier = config.CachingKeySupplier(ret.getMasterPassword)
 
 	ret.accountManager = newAccountManager(ret)
@@ -114,24 +114,29 @@ func (u *gtkUI) loadConfig(configFile string) {
 		u.configLoaded(c)
 	})
 
-	config, ok, err := config.LoadOrCreate(configFile, u.keySupplier)
-
-	if !ok {
-		u.keySupplier.Invalidate()
-		u.loadConfig(configFile)
-		// TODO: tell the user we couldn't open the encrypted file
-		log.Printf("couldn't open encrypted file - either the user didn't supply a password, or the password was incorrect")
-		return
+	ok := false
+	var conf *config.ApplicationConfig
+	var err error
+	for !ok {
+		conf, ok, err = config.LoadOrCreate(configFile, u.keySupplier)
+		if !ok {
+			log.Printf("couldn't open encrypted file - either the user didn't supply a password, or the password was incorrect: %v", err)
+			u.keySupplier.Invalidate()
+			u.keySupplier.LastAttemptFailed()
+		}
 	}
 
 	// We assign config here, AFTER the return - so that a nil config means we are in a state of incorrectness and shouldn't do stuff.
-	// TODO: we never check if config is nil. Is it intentional to have panics due nil pointer?
-	u.config = config
+	// We never check, since a panic here is a serious programming error
+	u.config = conf
 
 	if err != nil {
 		log.Printf(err.Error())
 		doInUIThread(u.initialSetupWindow)
 		return
+	}
+	if u.config.UpdateToLatestVersion() {
+		u.saveConfigOnlyInternal()
 	}
 }
 
@@ -155,6 +160,7 @@ func (u *gtkUI) configLoaded(c *config.ApplicationConfig) {
 	}
 
 	go u.listenToToggleConnectAllAutomatically()
+	go u.listenToSetShowAdvancedSettings()
 }
 
 func (u *gtkUI) saveConfigInternal() error {
@@ -422,33 +428,7 @@ func (u gtkUI) aboutDialog() {
 	// imagefile := path.Join(dir, "../../data/coyim-logo.png")
 	// pixbuf, _ := gdkpixbuf.NewFromFile(imagefile)
 	// dialog.SetLogo(pixbuf)
-	dialog.SetLicense(`Copyright (c) 2012 The Go Authors. All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-   * Redistributions of source code must retain the above copyright
-notice, this list of conditions and the following disclaimer.
-   * Redistributions in binary form must reproduce the above
-copyright notice, this list of conditions and the following disclaimer
-in the documentation and/or other materials provided with the
-distribution.
-   * Neither the name of Google Inc. nor the names of its
-contributors may be used to endorse or promote products derived from
-this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.`)
+	dialog.SetLicense(`GNU GENERAL PUBLIC LICENSE, Version 3`)
 	dialog.SetWrapLicense(true)
 	dialog.Run()
 	dialog.Destroy()
@@ -468,11 +448,11 @@ func (u *gtkUI) addContactWindow() {
 		//TODO errors
 		account, ok := u.roster.getAccount(accountID)
 		if !ok {
-			return fmt.Errorf("There is no account with the id %q", accountID)
+			return fmt.Errorf(i18n.Local("There is no account with the id %q"), accountID)
 		}
 
 		if !account.connected() {
-			return errors.New("Cant send a contact request from an offline account")
+			return errors.New(i18n.Local("Can't send a contact request from an offline account"))
 		}
 
 		return account.session.RequestPresenceSubscription(peer)
@@ -494,6 +474,18 @@ func (u *gtkUI) toggleConnectAllAutomatically() {
 	u.toggleConnectAllAutomaticallyRequest <- true
 }
 
+func (u *gtkUI) setShowAdvancedSettings(val bool) {
+	u.setShowAdvancedSettingsRequest <- val
+}
+
+func (u *gtkUI) listenToSetShowAdvancedSettings() {
+	for {
+		val := <-u.setShowAdvancedSettingsRequest
+		u.config.AdvancedOptions = val
+		u.saveConfigOnly()
+	}
+}
+
 func (u *gtkUI) initMenuBar() {
 	u.window.Connect(accountChangedSignal.String(), func() {
 		u.buildAccountsMenu()
@@ -509,67 +501,16 @@ func (u *gtkUI) rosterUpdated() {
 	doInUIThread(u.roster.redraw)
 }
 
-func (u *gtkUI) alertTorIsNotRunning() {
-	//TODO: should it notify instead of alert?
-
-	builder := builderForDefinition("TorNotRunning")
-
-	obj, _ := builder.GetObject("TorNotRunningDialog")
-	dialog := obj.(*gtk.Dialog)
-
-	dialog.SetTransientFor(u.window)
-	dialog.ShowAll()
-}
-
-func (u *gtkUI) askForServerDetails(conf *config.Account, connectFn func() error) {
-	builder := builderForDefinition("ConnectionSettings")
-
-	obj, _ := builder.GetObject("ConnectionSettingsDialog")
-	dialog := obj.(*gtk.Dialog)
-
-	obj, _ = builder.GetObject("server")
-	serverEntry := obj.(*gtk.Entry)
-
-	obj, _ = builder.GetObject("port")
-	portEntry := obj.(*gtk.Entry)
-
-	if conf.Port == 0 {
-		conf.Port = 5222
-	}
-
-	serverEntry.SetText(conf.Server)
-	portEntry.SetText(strconv.Itoa(conf.Port))
-
-	builder.ConnectSignals(map[string]interface{}{
-		"reconnect": func() {
-			defer dialog.Destroy()
-
-			//TODO: validate
-			conf.Server, _ = serverEntry.GetText()
-
-			p, _ := portEntry.GetText()
-			conf.Port, _ = strconv.Atoi(p)
-
-			go func() {
-				if connectFn() != nil {
-					return
-				}
-
-				u.saveConfigOnly()
-			}()
-		},
-	})
-
-	dialog.SetTransientFor(u.window)
-	dialog.ShowAll()
-}
-
 func (u *gtkUI) editAccount(account *account) {
-	u.accountDialog(account.session.GetConfig(), u.SaveConfig)
+	u.accountDialog(account.session, account.session.GetConfig(), func() {
+		u.SaveConfig()
+		account.session.ReloadKeys()
+	})
 }
 
 func (u *gtkUI) removeAccount(account *account) {
 	u.confirmAccountRemoval(account.session.GetConfig(), func(c *config.Account) {
+		account.session.WantToBeOnline = false
 		account.disconnect()
 		u.removeSaveReload(c)
 	})

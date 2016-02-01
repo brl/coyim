@@ -2,6 +2,8 @@ package config
 
 import (
 	"encoding/json"
+	"io/ioutil"
+	"log"
 	"os"
 	"strings"
 	"testing"
@@ -11,9 +13,17 @@ import (
 
 func Test(t *testing.T) { TestingT(t) }
 
+func init() {
+	log.SetOutput(ioutil.Discard)
+}
+
 type ConfigXmppSuite struct{}
 
 var _ = Suite(&ConfigXmppSuite{})
+
+func init() {
+	log.SetOutput(ioutil.Discard)
+}
 
 func (s *ConfigXmppSuite) TestParseYes(c *C) {
 	c.Assert(ParseYes("Y"), Equals, true)
@@ -29,7 +39,7 @@ func (s *ConfigXmppSuite) TestSerializeAccountsConfig(c *C) {
 	"Accounts": [
 		{
 			"Account": "bob@riseup.net",
-			"KnownFingerprints": null,
+			"Peers": null,
 			"HideStatusUpdates": false,
 			"RequireTor": true,
 			"OTRAutoTearDown": false,
@@ -40,7 +50,7 @@ func (s *ConfigXmppSuite) TestSerializeAccountsConfig(c *C) {
 		},
 		{
 			"Account": "bob@riseup.net",
-			"KnownFingerprints": null,
+			"Peers": null,
 			"HideStatusUpdates": false,
 			"RequireTor": false,
 			"OTRAutoTearDown": false,
@@ -55,7 +65,8 @@ func (s *ConfigXmppSuite) TestSerializeAccountsConfig(c *C) {
 		"MergeAccounts": false,
 		"ShowOnlyOnline": false,
 		"HideFeedbackBar": false
-	}
+	},
+	"AdvancedOptions": false
 }`
 
 	conf := ApplicationConfig{
