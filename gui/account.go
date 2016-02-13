@@ -8,7 +8,9 @@ import (
 	"github.com/gotk3/gotk3/gtk"
 	"github.com/twstrike/coyim/config"
 	"github.com/twstrike/coyim/i18n"
-	"github.com/twstrike/coyim/session"
+	"github.com/twstrike/coyim/session/access"
+	"github.com/twstrike/coyim/session/events"
+	"github.com/twstrike/coyim/xmpp/interfaces"
 )
 
 // account wraps a Session with GUI functionality
@@ -16,13 +18,13 @@ type account struct {
 	menu                *gtk.MenuItem
 	currentNotification *gtk.InfoBar
 
-	//TODO: Should this be a map of roster.Peer and conversationWindow?
-	conversations map[string]*conversationWindow
+	//TODO: Should this be a map of roster.Peer and conversationView?
+	conversations map[string]conversationView
 
-	session         *session.Session
+	session         access.Session
 	sessionObserver chan interface{}
 
-	delayedConversations     map[string][]func(*conversationWindow)
+	delayedConversations     map[string][]func(conversationView)
 	delayedConversationsLock sync.Mutex
 
 	sync.Mutex
@@ -36,11 +38,11 @@ func (s byAccountNameAlphabetic) Less(i, j int) bool {
 }
 func (s byAccountNameAlphabetic) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 
-func newAccount(conf *config.ApplicationConfig, currentConf *config.Account) *account {
+func newAccount(conf *config.ApplicationConfig, currentConf *config.Account, sf access.Factory, df func() interfaces.Dialer) *account {
 	return &account{
-		session:              session.NewSession(conf, currentConf),
-		conversations:        make(map[string]*conversationWindow),
-		delayedConversations: make(map[string][]func(*conversationWindow)),
+		session:              sf(conf, currentConf, df),
+		conversations:        make(map[string]conversationView),
+		delayedConversations: make(map[string][]func(conversationView)),
 	}
 }
 
@@ -48,26 +50,31 @@ func (account *account) ID() string {
 	return account.session.GetConfig().ID()
 }
 
-func (account *account) getConversationWith(to string) (*conversationWindow, bool) {
+func (account *account) getConversationWith(to string) (conversationView, bool) {
 	c, ok := account.conversations[to]
 	return c, ok
 }
 
-func (account *account) createConversationWindow(to string, displaySettings *displaySettings, textBuffer *gtk.TextBuffer) *conversationWindow {
-	c := newConversationWindow(account, to, displaySettings, textBuffer)
-	account.conversations[to] = c
+func (account *account) createConversationView(to string, ui *gtkUI) conversationView {
+	var cv conversationView
+	if *config.SingleWindowFlag {
+		cv = ui.unified.createConversation(account, to)
+	} else {
+		cv = newConversationWindow(account, to, ui)
+	}
+	account.conversations[to] = cv
 
 	account.delayedConversationsLock.Lock()
 	defer account.delayedConversationsLock.Unlock()
 	for _, f := range account.delayedConversations[to] {
-		f(c)
+		f(cv)
 	}
 	delete(account.delayedConversations, to)
 
-	return c
+	return cv
 }
 
-func (account *account) afterConversationWindowCreated(to string, f func(*conversationWindow)) {
+func (account *account) afterConversationWindowCreated(to string, f func(conversationView)) {
 	account.delayedConversationsLock.Lock()
 	defer account.delayedConversationsLock.Unlock()
 
@@ -79,18 +86,14 @@ func (account *account) enableExistingConversationWindows(enable bool) {
 		account.Lock()
 		defer account.Unlock()
 
-		for _, convWindow := range account.conversations {
-			if enable {
-				convWindow.win.Emit("enable")
-			} else {
-				convWindow.win.Emit("disable")
-			}
+		for _, cv := range account.conversations {
+			cv.setEnabled(enable)
 		}
 	}
 }
 
 func (account *account) executeCmd(c interface{}) {
-	account.session.CommandManager.ExecuteCmd(c)
+	account.session.CommandManager().ExecuteCmd(c)
 }
 
 func (account *account) connected() bool {
@@ -99,43 +102,40 @@ func (account *account) connected() bool {
 
 func (u *gtkUI) showServerSelectionWindow() error {
 	builder := builderForDefinition("AccountRegistration")
-	builder.ConnectSignals(map[string]interface{}{
-		"response-handler": func(d *gtk.Dialog, resp gtk.ResponseType) {
-			defer d.Destroy()
-
-			if resp != gtk.RESPONSE_APPLY {
-				return
-			}
-
-			obj, _ := builder.GetObject("server")
-			iter, _ := obj.(*gtk.ComboBox).GetActiveIter()
-
-			obj, _ = builder.GetObject("servers-model")
-			val, _ := obj.(*gtk.ListStore).GetValue(iter, 0)
-			server, _ := val.GetString()
-
-			form := &registrationForm{
-				parent: u.window,
-				server: server,
-			}
-
-			saveFn := func() {
-				u.addAndSaveAccountConfig(form.conf)
-				if acc, ok := u.getAccountByID(form.conf.ID()); ok {
-					acc.session.WantToBeOnline = true
-					acc.Connect()
-				}
-			}
-
-			go requestAndRenderRegistrationForm(form.server, form.renderForm, saveFn)
-		},
-	})
-
 	obj, _ := builder.GetObject("dialog")
 
-	dialog := obj.(*gtk.Dialog)
-	dialog.SetTransientFor(u.window)
-	dialog.ShowAll()
+	d := obj.(*gtk.Dialog)
+	defer d.Destroy()
+
+	d.SetTransientFor(u.window)
+	d.ShowAll()
+
+	resp := d.Run()
+	if gtk.ResponseType(resp) != gtk.RESPONSE_APPLY {
+		return nil
+	}
+
+	obj, _ = builder.GetObject("server")
+	iter, _ := obj.(*gtk.ComboBox).GetActiveIter()
+
+	obj, _ = builder.GetObject("servers-model")
+	val, _ := obj.(*gtk.ListStore).GetValue(iter, 0)
+	server, _ := val.GetString()
+
+	form := &registrationForm{
+		parent: u.window,
+		server: server,
+	}
+
+	saveFn := func() {
+		u.addAndSaveAccountConfig(form.conf)
+		if acc, ok := u.getAccountByID(form.conf.ID()); ok {
+			acc.session.SetWantToBeOnline(true)
+			acc.Connect()
+		}
+	}
+
+	go requestAndRenderRegistrationForm(form.server, form.renderForm, saveFn, u.dialerFactory)
 
 	return nil
 }
@@ -234,9 +234,9 @@ func (account *account) watchAndToggleMenuItems(connectItem, disconnectItem *gtk
 
 	for ev := range account.sessionObserver {
 		switch t := ev.(type) {
-		case session.Event:
+		case events.Event:
 			switch t.Type {
-			case session.Connected, session.Disconnected, session.Connecting:
+			case events.Connected, events.Disconnected, events.Connecting:
 				toggleConnectAndDisconnectMenuItems(t.Session, connectItem, disconnectItem)
 			}
 		}

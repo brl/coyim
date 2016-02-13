@@ -1,3 +1,6 @@
+#GTK_VERSION=$(shell pkg-config --modversion gtk+-3.0 | tr . _ | cut -d '_' -f 1-2)
+#GTK_BUILD_TAG="gtk_$(GTK_VERSION)"
+
 ci: get lint doctor test coveralls
 
 get:
@@ -37,7 +40,7 @@ cross-compile:
 	gox -build-toolchain || true
 
 	# windows does not have syscall.SIGWINCH
-	cd .. && gox -os "!windows" -output "release/{{.Dir}}-cli_{{.OS}}_{{.Arch}}"
+	cd .. && gox -os "!windows" -tags "cli" -output "release/{{.Dir}}-cli_{{.OS}}_{{.Arch}}"
 
 clean-mac-bundle:
 	$(RM) -r ../bin/mac-bundle
@@ -53,7 +56,7 @@ release-dmg: clean-mac-bundle mac-bundle
 	ln -s /Applications ../bin/mac-bundle/Applications
 	cp ../build/mac-bundle/ds-store ../bin/mac-bundle/.DS_Store
 	./make-dmg coyim ../bin/mac-bundle ../release/coyim.dmg
-	openssl dgst -sha1 ../release/coyim.dmg >> ../release/checksum
+	openssl dgst -sha256 ../release/coyim.dmg >> ../release/checksum
 
 ../bin/coyim:
 	make -C ../ build-gui
@@ -61,7 +64,7 @@ release-dmg: clean-mac-bundle mac-bundle
 release-gui: ../bin/coyim
 	mkdir -p ../release
 	cp ../bin/coyim ../release/coyim_$(shell go env GOOS)_$(shell go env GOARCH)
-	openssl dgst -sha1 ../release/coyim_$(shell go env GOOS)_$(shell go env GOARCH) >> ../release/checksum
+	openssl dgst -sha256 ../release/coyim_$(shell go env GOOS)_$(shell go env GOARCH) >> ../release/checksum
 
 ../bin/coyim.exe:
 	make -C ../ build-gui-win
@@ -69,4 +72,4 @@ release-gui: ../bin/coyim
 release-gui-win: ../bin/coyim.exe
 	mkdir -p ../release
 	cp ../bin/coyim.exe ../release/coyim_$(shell go env GOOS)_$(shell go env GOARCH).exe
-	openssl dgst -sha1 ../release/coyim_$(shell go env GOOS)_$(shell go env GOARCH).exe >> ../release/checksum
+	openssl dgst -sha256 ../release/coyim_$(shell go env GOOS)_$(shell go env GOARCH).exe >> ../release/checksum

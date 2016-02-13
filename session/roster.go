@@ -1,12 +1,12 @@
 package session
 
-import "github.com/twstrike/coyim/xmpp"
+import "github.com/twstrike/coyim/xmpp/data"
 
 // RemoveContact is used to remove a contact
 //TODO: double check how the RFC calls this
-func (s *Session) RemoveContact(jid string) {
-	s.Conn.SendIQ("" /* to the server */, "set", xmpp.RosterRequest{
-		Item: xmpp.RosterRequestItem{
+func (s *session) RemoveContact(jid string) {
+	s.conn.SendIQ("" /* to the server */, "set", data.RosterRequest{
+		Item: data.RosterRequestItem{
 			Jid:          jid,
 			Subscription: "remove",
 		},

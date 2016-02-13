@@ -6,7 +6,8 @@ import (
 	"github.com/twstrike/coyim/client"
 	"github.com/twstrike/coyim/config"
 	rosters "github.com/twstrike/coyim/roster"
-	"github.com/twstrike/coyim/session"
+	"github.com/twstrike/coyim/session/access"
+	"github.com/twstrike/coyim/xmpp/interfaces"
 )
 
 type accountManager struct {
@@ -28,6 +29,12 @@ func newAccountManager(c client.CommandManager) *accountManager {
 	}
 }
 
+func (m *accountManager) disconnectAll() {
+	for _, acc := range m.accounts {
+		acc.disconnect()
+	}
+}
+
 func (m *accountManager) getAccountByID(ID string) (*account, bool) {
 	m.RLock()
 	defer m.RUnlock()
@@ -41,7 +48,7 @@ func (m *accountManager) getAccountByID(ID string) (*account, bool) {
 	return nil, false
 }
 
-func (m *accountManager) findAccountForSession(s *session.Session) *account {
+func (m *accountManager) findAccountForSession(s access.Session) *account {
 	acc, _ := m.getAccountByID(s.GetConfig().ID())
 	return acc
 }
@@ -61,14 +68,14 @@ func (m *accountManager) setContacts(account *account, contacts *rosters.List) {
 	m.contacts[account] = contacts
 }
 
-func (m *accountManager) addAccount(appConfig *config.ApplicationConfig, account *config.Account) {
+func (m *accountManager) addAccount(appConfig *config.ApplicationConfig, account *config.Account, sf access.Factory, df func() interfaces.Dialer) {
 	m.Lock()
 	defer m.Unlock()
 
-	acc := newAccount(appConfig, account)
+	acc := newAccount(appConfig, account, sf, df)
 	acc.session.Subscribe(m.events)
-	acc.session.CommandManager = m
-	acc.session.Connector = acc
+	acc.session.SetCommandManager(m)
+	acc.session.SetConnector(acc)
 
 	m.accounts = append(m.accounts, acc)
 	m.setContacts(acc, rosters.New())
@@ -98,7 +105,7 @@ func (m *accountManager) removeAccount(conf *config.Account, k func()) {
 	k()
 }
 
-func (m *accountManager) buildAccounts(appConfig *config.ApplicationConfig) {
+func (m *accountManager) buildAccounts(appConfig *config.ApplicationConfig, sf access.Factory, df func() interfaces.Dialer) {
 	hasConfUpdates := false
 	for _, accountConf := range appConfig.Accounts {
 		if _, ok := m.getAccountByID(accountConf.ID()); ok {
@@ -111,7 +118,7 @@ func (m *accountManager) buildAccounts(appConfig *config.ApplicationConfig) {
 		}
 
 		hasConfUpdates = hasConfUpdates || hasUpdate
-		m.addAccount(appConfig, accountConf)
+		m.addAccount(appConfig, accountConf, sf, df)
 	}
 
 	if hasConfUpdates {
@@ -119,14 +126,14 @@ func (m *accountManager) buildAccounts(appConfig *config.ApplicationConfig) {
 	}
 }
 
-func (m *accountManager) addNewAccountsFromConfig(appConfig *config.ApplicationConfig) {
+func (m *accountManager) addNewAccountsFromConfig(appConfig *config.ApplicationConfig, sf access.Factory, df func() interfaces.Dialer) {
 	for _, configAccount := range appConfig.Accounts {
 		_, found := m.getAccountByID(configAccount.ID())
 		if found {
 			continue
 		}
 
-		m.addAccount(appConfig, configAccount)
+		m.addAccount(appConfig, configAccount, sf, df)
 	}
 }
 

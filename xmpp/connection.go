@@ -18,11 +18,15 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/twstrike/coyim/xmpp/data"
+	"github.com/twstrike/coyim/xmpp/interfaces"
+	"github.com/twstrike/coyim/xmpp/utils"
 )
 
-// Conn represents a connection to an XMPP server.
-type Conn struct {
-	config Config
+// conn represents a connection to an XMPP server.
+type conn struct {
+	config data.Config
 
 	in           *xml.Decoder
 	out          io.Writer
@@ -31,11 +35,11 @@ type Conn struct {
 
 	jid          string
 	originDomain string
-	features     streamFeatures
+	features     data.StreamFeatures
 
-	Rand          io.Reader
+	rand          io.Reader
 	lock          sync.Mutex
-	inflights     map[Cookie]inflight
+	inflights     map[data.Cookie]inflight
 	customStorage map[xml.Name]reflect.Type
 
 	lastPingRequest  time.Time
@@ -45,36 +49,77 @@ type Conn struct {
 	closed       bool
 }
 
+func (c *conn) CustomStorage() map[xml.Name]reflect.Type {
+	return c.customStorage
+}
+
+func (c *conn) OriginDomain() string {
+	return c.originDomain
+}
+
+func (c *conn) Lock() *sync.Mutex {
+	return &c.lock
+}
+
+func (c *conn) SetInOut(i *xml.Decoder, o io.Writer) {
+	c.in = i
+	c.out = o
+}
+
+func (c *conn) SetRawOut(o io.WriteCloser) {
+	c.rawOut = o
+}
+
+func (c *conn) SetKeepaliveOut(o io.Writer) {
+	c.keepaliveOut = o
+}
+
+func (c *conn) Features() data.StreamFeatures {
+	return c.features
+}
+
+func (c *conn) Config() *data.Config {
+	return &c.config
+}
+
+func (c *conn) In() *xml.Decoder {
+	return c.in
+}
+
+func (c *conn) Out() io.Writer {
+	return c.out
+}
+
 // NewConn creates a new connection
 //TODO: this is used only for testing. Remove when we have a Conn interface
-func NewConn(in *xml.Decoder, out io.WriteCloser, jid string) *Conn {
-	conn := &Conn{
+func NewConn(in *xml.Decoder, out io.WriteCloser, jid string) interfaces.Conn {
+	conn := &conn{
 		in:     in,
 		out:    out,
 		rawOut: out,
 		jid:    jid,
 
-		inflights:    make(map[Cookie]inflight),
+		inflights:    make(map[data.Cookie]inflight),
 		delayedClose: make(chan bool, 1),
 
-		Rand: rand.Reader,
+		rand: rand.Reader,
 	}
 
 	conn.delayedClose <- true // closes immediately
 	return conn
 }
 
-func newConn() *Conn {
-	return &Conn{
-		inflights:    make(map[Cookie]inflight),
+func newConn() *conn {
+	return &conn{
+		inflights:    make(map[data.Cookie]inflight),
 		delayedClose: make(chan bool),
 
-		Rand: rand.Reader,
+		rand: rand.Reader,
 	}
 }
 
 // Close closes the underlying connection
-func (c *Conn) Close() error {
+func (c *conn) Close() error {
 	if c.closed {
 		return errors.New("xmpp: the connection is already closed")
 	}
@@ -103,7 +148,7 @@ func (c *Conn) Close() error {
 	return c.closeTCP()
 }
 
-func (c *Conn) closeImmediately() error {
+func (c *conn) closeImmediately() error {
 	go func() {
 		c.delayedClose <- true
 	}()
@@ -111,7 +156,7 @@ func (c *Conn) closeImmediately() error {
 	return c.Close()
 }
 
-func (c *Conn) closeTCP() error {
+func (c *conn) closeTCP() error {
 	log.Println("xmpp: TCP closed")
 	return c.rawOut.Close()
 }
@@ -119,25 +164,25 @@ func (c *Conn) closeTCP() error {
 // Next reads stanzas from the server. If the stanza is a reply, it dispatches
 // it to the correct channel and reads the next message. Otherwise it returns
 // the stanza for processing.
-func (c *Conn) Next() (stanza Stanza, err error) {
+func (c *conn) Next() (stanza data.Stanza, err error) {
 	for {
 		if stanza.Name, stanza.Value, err = next(c); err != nil {
 			return
 		}
 
-		if _, ok := stanza.Value.(*StreamClose); ok {
+		if _, ok := stanza.Value.(*data.StreamClose); ok {
 			log.Println("xmpp: received closing stream tag")
 			go c.closeImmediately()
 			return
 		}
 
-		if iq, ok := stanza.Value.(*ClientIQ); ok && (iq.Type == "result" || iq.Type == "error") {
+		if iq, ok := stanza.Value.(*data.ClientIQ); ok && (iq.Type == "result" || iq.Type == "error") {
 			var cookieValue uint64
 			if cookieValue, err = strconv.ParseUint(iq.ID, 16, 64); err != nil {
 				err = errors.New("xmpp: failed to parse id from iq: " + err.Error())
 				return
 			}
-			cookie := Cookie(cookieValue)
+			cookie := data.Cookie(cookieValue)
 
 			c.lock.Lock()
 			inflight, ok := c.inflights[cookie]
@@ -157,7 +202,7 @@ func (c *Conn) Next() (stanza Stanza, err error) {
 				// then the matching is more complex because
 				// servers differ in how they construct the
 				// reply.
-				if len(iq.From) > 0 && iq.From != c.jid && iq.From != RemoveResourceFromJid(c.jid) && iq.From != domainFromJid(c.jid) {
+				if len(iq.From) > 0 && iq.From != c.jid && iq.From != utils.RemoveResourceFromJid(c.jid) && iq.From != utils.DomainFromJid(c.jid) {
 					continue
 				}
 			}
@@ -175,7 +220,7 @@ func (c *Conn) Next() (stanza Stanza, err error) {
 }
 
 // Cancel cancels and outstanding request. The request's channel is closed.
-func (c *Conn) Cancel(cookie Cookie) bool {
+func (c *conn) Cancel(cookie data.Cookie) bool {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
@@ -190,7 +235,7 @@ func (c *Conn) Cancel(cookie Cookie) bool {
 }
 
 // Send sends an IM message to the given user.
-func (c *Conn) Send(to, msg string) error {
+func (c *conn) Send(to, msg string) error {
 	archive := ""
 	if !c.config.Archive {
 		// The first part of archive is from google:
@@ -205,7 +250,7 @@ func (c *Conn) Send(to, msg string) error {
 }
 
 // ReadStanzas reads XMPP stanzas
-func (c *Conn) ReadStanzas(stanzaChan chan<- Stanza) error {
+func (c *conn) ReadStanzas(stanzaChan chan<- data.Stanza) error {
 	defer close(stanzaChan)
 	defer c.closeImmediately()
 
@@ -217,7 +262,7 @@ func (c *Conn) ReadStanzas(stanzaChan chan<- Stanza) error {
 		}
 
 		//The receiving entity has closed the channel
-		if _, quit := stanza.Value.(*StreamClose); quit {
+		if _, quit := stanza.Value.(*data.StreamClose); quit {
 			return nil
 		}
 

@@ -11,7 +11,7 @@ import (
 	"github.com/twstrike/coyim/config"
 	"github.com/twstrike/coyim/i18n"
 	"github.com/twstrike/coyim/net"
-	"github.com/twstrike/coyim/session"
+	"github.com/twstrike/coyim/session/access"
 )
 
 type accountDetailsData struct {
@@ -59,11 +59,11 @@ func getBuilderAndAccountDialogDetails() *accountDetailsData {
 	return data
 }
 
-func formattedFingerprintsFor(s *session.Session) string {
+func formattedFingerprintsFor(s access.Session) string {
 	result := ""
 
 	if s != nil {
-		for _, sk := range s.PrivateKeys {
+		for _, sk := range s.PrivateKeys() {
 			pk := sk.PublicKey()
 			if pk != nil {
 				result = fmt.Sprintf("%s%s%s\n", result, "    ", config.FormatFingerprint(pk.Fingerprint()))
@@ -74,7 +74,7 @@ func formattedFingerprintsFor(s *session.Session) string {
 	return result
 }
 
-func (u *gtkUI) accountDialog(s *session.Session, account *config.Account, saveFunction func()) {
+func (u *gtkUI) accountDialog(s access.Session, account *config.Account, saveFunction func()) {
 	data := getBuilderAndAccountDialogDetails()
 
 	data.otherSettings.SetActive(u.config.AdvancedOptions)

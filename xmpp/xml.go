@@ -14,6 +14,9 @@ import (
 	"log"
 	"reflect"
 	"strings"
+
+	"github.com/twstrike/coyim/xmpp/data"
+	"github.com/twstrike/coyim/xmpp/interfaces"
 )
 
 var xmlSpecial = map[byte]string{
@@ -80,14 +83,14 @@ func nextStart(p *xml.Decoder) (xml.StartElement, error) {
 // Scan XML token stream for next element and save into val.
 // If val == nil, allocate new element based on proto map.
 // Either way, return val.
-func next(c *Conn) (xml.Name, interface{}, error) {
-	elem, err := nextElement(c.in)
+func next(c interfaces.Conn) (xml.Name, interface{}, error) {
+	elem, err := nextElement(c.In())
 	if err != nil {
 		return xml.Name{}, nil, err
 	}
 
-	c.lock.Lock()
-	defer c.lock.Unlock()
+	c.Lock().Lock()
+	defer c.Lock().Unlock()
 
 	switch el := elem.(type) {
 	case xml.StartElement:
@@ -99,11 +102,11 @@ func next(c *Conn) (xml.Name, interface{}, error) {
 	return xml.Name{}, nil, fmt.Errorf("unexpected element %s", elem)
 }
 
-func decodeStartElement(c *Conn, se xml.StartElement) (xml.Name, interface{}, error) {
+func decodeStartElement(c interfaces.Conn, se xml.StartElement) (xml.Name, interface{}, error) {
 
 	// Put it in an interface and allocate one.
 	var nv interface{}
-	if t, e := c.customStorage[se.Name]; e {
+	if t, e := c.CustomStorage()[se.Name]; e {
 		nv = reflect.New(t).Interface()
 	} else if t, e := defaultStorage[se.Name]; e {
 		nv = reflect.New(t).Interface()
@@ -113,7 +116,7 @@ func decodeStartElement(c *Conn, se xml.StartElement) (xml.Name, interface{}, er
 	}
 
 	// Unmarshal into that storage.
-	if err := c.in.DecodeElement(nv, &se); err != nil {
+	if err := c.In().DecodeElement(nv, &se); err != nil {
 		return xml.Name{}, nil, err
 	}
 
@@ -123,27 +126,27 @@ func decodeStartElement(c *Conn, se xml.StartElement) (xml.Name, interface{}, er
 func decodeEndElement(ce xml.EndElement) (xml.Name, interface{}, error) {
 	switch ce.Name {
 	case xml.Name{NsStream, "stream"}:
-		return ce.Name, &StreamClose{}, nil
+		return ce.Name, &data.StreamClose{}, nil
 	}
 
 	return ce.Name, nil, nil
 }
 
 var defaultStorage = map[xml.Name]reflect.Type{
-	xml.Name{Space: NsStream, Local: "features"}: reflect.TypeOf(streamFeatures{}),
-	xml.Name{Space: NsStream, Local: "error"}:    reflect.TypeOf(StreamError{}),
-	xml.Name{Space: NsTLS, Local: "starttls"}:    reflect.TypeOf(tlsStartTLS{}),
-	xml.Name{Space: NsTLS, Local: "proceed"}:     reflect.TypeOf(tlsProceed{}),
-	xml.Name{Space: NsTLS, Local: "failure"}:     reflect.TypeOf(tlsFailure{}),
-	xml.Name{Space: NsSASL, Local: "mechanisms"}: reflect.TypeOf(saslMechanisms{}),
+	xml.Name{Space: NsStream, Local: "features"}: reflect.TypeOf(data.StreamFeatures{}),
+	xml.Name{Space: NsStream, Local: "error"}:    reflect.TypeOf(data.StreamError{}),
+	xml.Name{Space: NsTLS, Local: "starttls"}:    reflect.TypeOf(data.StartTLS{}),
+	xml.Name{Space: NsTLS, Local: "proceed"}:     reflect.TypeOf(data.ProceedTLS{}),
+	xml.Name{Space: NsTLS, Local: "failure"}:     reflect.TypeOf(data.FailureTLS{}),
+	xml.Name{Space: NsSASL, Local: "mechanisms"}: reflect.TypeOf(data.SaslMechanisms{}),
 	xml.Name{Space: NsSASL, Local: "challenge"}:  reflect.TypeOf(""),
 	xml.Name{Space: NsSASL, Local: "response"}:   reflect.TypeOf(""),
-	xml.Name{Space: NsSASL, Local: "abort"}:      reflect.TypeOf(saslAbort{}),
-	xml.Name{Space: NsSASL, Local: "success"}:    reflect.TypeOf(saslSuccess{}),
-	xml.Name{Space: NsSASL, Local: "failure"}:    reflect.TypeOf(saslFailure{}),
-	xml.Name{Space: NsBind, Local: "bind"}:       reflect.TypeOf(bindBind{}),
-	xml.Name{Space: NsClient, Local: "message"}:  reflect.TypeOf(ClientMessage{}),
-	xml.Name{Space: NsClient, Local: "presence"}: reflect.TypeOf(ClientPresence{}),
-	xml.Name{Space: NsClient, Local: "iq"}:       reflect.TypeOf(ClientIQ{}),
-	xml.Name{Space: NsClient, Local: "error"}:    reflect.TypeOf(ClientError{}),
+	xml.Name{Space: NsSASL, Local: "abort"}:      reflect.TypeOf(data.SaslAbort{}),
+	xml.Name{Space: NsSASL, Local: "success"}:    reflect.TypeOf(data.SaslSuccess{}),
+	xml.Name{Space: NsSASL, Local: "failure"}:    reflect.TypeOf(data.SaslFailure{}),
+	xml.Name{Space: NsBind, Local: "bind"}:       reflect.TypeOf(data.BindBind{}),
+	xml.Name{Space: NsClient, Local: "message"}:  reflect.TypeOf(data.ClientMessage{}),
+	xml.Name{Space: NsClient, Local: "presence"}: reflect.TypeOf(data.ClientPresence{}),
+	xml.Name{Space: NsClient, Local: "iq"}:       reflect.TypeOf(data.ClientIQ{}),
+	xml.Name{Space: NsClient, Local: "error"}:    reflect.TypeOf(data.ClientError{}),
 }

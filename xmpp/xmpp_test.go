@@ -7,6 +7,8 @@ import (
 	"log"
 	"testing"
 
+	"github.com/twstrike/coyim/xmpp/data"
+
 	. "gopkg.in/check.v1"
 )
 
@@ -32,9 +34,9 @@ func (s *XmppSuite) TestDiscoReplyVerSimple(c *C) {
     <feature var='http://jabber.org/protocol/muc'/>
   </query>
   `)
-	var dr DiscoveryReply
+	var dr data.DiscoveryReply
 	c.Assert(xml.Unmarshal(input, &dr), IsNil)
-	hash, err := dr.VerificationString()
+	hash, err := VerificationString(&dr)
 	c.Assert(err, IsNil)
 	c.Assert(hash, Equals, expect)
 }
@@ -73,9 +75,9 @@ func (s *XmppSuite) TestDiscoReplyVerComplex(c *C) {
     </x>
   </query>
 `)
-	var dr DiscoveryReply
+	var dr data.DiscoveryReply
 	c.Assert(xml.Unmarshal(input, &dr), IsNil)
-	hash, err := dr.VerificationString()
+	hash, err := VerificationString(&dr)
 	c.Assert(err, IsNil)
 	c.Assert(hash, Equals, expect)
 }
@@ -85,7 +87,7 @@ func (s *XmppSuite) TestConnClose(c *C) {
 		read: []byte("<?xml version='1.0'?><str:stream xmlns:str='http://etherx.jabber.org/streams' version='1.0'></str:stream>"),
 	}
 	mockCloser := &mockConnIOReaderWriter{}
-	conn := NewConn(xml.NewDecoder(mockIn), mockCloser, "")
+	conn := NewConn(xml.NewDecoder(mockIn), mockCloser, "").(*conn)
 
 	// consumes the opening stream
 	nextElement(conn.in)
@@ -99,7 +101,7 @@ func (s *XmppSuite) TestConnClose(c *C) {
 
 func (s *XmppSuite) TestConnNextEOF(c *C) {
 	mockIn := &mockConnIOReaderWriter{err: io.EOF}
-	conn := Conn{
+	conn := conn{
 		in: xml.NewDecoder(mockIn),
 	}
 	stanza, err := conn.Next()
@@ -116,7 +118,7 @@ func (s *XmppSuite) TestConnNextErr(c *C) {
       </field>
 		`),
 	}
-	conn := Conn{
+	conn := conn{
 		in: xml.NewDecoder(mockIn),
 	}
 	stanza, err := conn.Next()
@@ -136,12 +138,12 @@ func (s *XmppSuite) TestConnNextIQSet(c *C) {
 </iq>
   `),
 	}
-	conn := Conn{
+	conn := conn{
 		in: xml.NewDecoder(mockIn),
 	}
 	stanza, err := conn.Next()
 	c.Assert(stanza.Name, Equals, xml.Name{Space: NsClient, Local: "iq"})
-	iq, ok := stanza.Value.(*ClientIQ)
+	iq, ok := stanza.Value.(*data.ClientIQ)
 	c.Assert(ok, Equals, true)
 	c.Assert(iq.To, Equals, "example.com")
 	c.Assert(iq.Type, Equals, "set")
@@ -157,12 +159,12 @@ func (s *XmppSuite) TestConnNextIQResult(c *C) {
     id='sess_1'/>
   `),
 	}
-	conn := Conn{
+	conn := conn{
 		in: xml.NewDecoder(mockIn),
 	}
 	stanza, err := conn.Next()
 	c.Assert(stanza.Name, Equals, xml.Name{Space: NsClient, Local: "iq"})
-	iq, ok := stanza.Value.(*ClientIQ)
+	iq, ok := stanza.Value.(*data.ClientIQ)
 	c.Assert(ok, Equals, true)
 	c.Assert(iq.From, Equals, "example.com")
 	c.Assert(iq.Type, Equals, "result")
@@ -170,16 +172,16 @@ func (s *XmppSuite) TestConnNextIQResult(c *C) {
 }
 
 func (s *XmppSuite) TestConnCancelError(c *C) {
-	conn := Conn{}
+	conn := conn{}
 	ok := conn.Cancel(conn.getCookie())
 	c.Assert(ok, Equals, false)
 }
 
 func (s *XmppSuite) TestConnCancelOK(c *C) {
-	conn := Conn{}
+	conn := conn{}
 	cookie := conn.getCookie()
-	ch := make(chan Stanza, 1)
-	conn.inflights = make(map[Cookie]inflight)
+	ch := make(chan data.Stanza, 1)
+	conn.inflights = make(map[data.Cookie]inflight)
 	conn.inflights[cookie] = inflight{ch, ""}
 	ok := conn.Cancel(cookie)
 	c.Assert(ok, Equals, true)
@@ -189,10 +191,10 @@ func (s *XmppSuite) TestConnCancelOK(c *C) {
 
 func (s *XmppSuite) TestConnRequestRoster(c *C) {
 	mockOut := mockConnIOReaderWriter{}
-	conn := Conn{
+	conn := conn{
 		out: &mockOut,
 	}
-	conn.inflights = make(map[Cookie]inflight)
+	conn.inflights = make(map[data.Cookie]inflight)
 	ch, cookie, err := conn.RequestRoster()
 	c.Assert(string(mockOut.write), Matches, "<iq type='get' id='.*'><query xmlns='jabber:iq:roster'/></iq>")
 	c.Assert(ch, NotNil)
@@ -202,10 +204,10 @@ func (s *XmppSuite) TestConnRequestRoster(c *C) {
 
 func (s *XmppSuite) TestConnRequestRosterErr(c *C) {
 	mockOut := mockConnIOReaderWriter{err: io.EOF}
-	conn := Conn{
+	conn := conn{
 		out: &mockOut,
 	}
-	conn.inflights = make(map[Cookie]inflight)
+	conn.inflights = make(map[data.Cookie]inflight)
 	ch, cookie, err := conn.RequestRoster()
 	c.Assert(string(mockOut.write), Matches, "<iq type='get' id='.*'><query xmlns='jabber:iq:roster'/></iq>")
 	c.Assert(ch, IsNil)
@@ -214,7 +216,7 @@ func (s *XmppSuite) TestConnRequestRosterErr(c *C) {
 }
 
 func (s *XmppSuite) TestParseRoster(c *C) {
-	iq := ClientIQ{}
+	iq := data.ClientIQ{}
 	iq.Query = []byte(`
   <query xmlns='jabber:iq:roster'>
     <item jid='romeo@example.net'
@@ -234,17 +236,17 @@ func (s *XmppSuite) TestParseRoster(c *C) {
     </item>
   </query>
   `)
-	reply := Stanza{
+	reply := data.Stanza{
 		Value: &iq,
 	}
-	rosterEntrys, err := ParseRoster(reply)
+	rosterEntrys, err := data.ParseRoster(reply)
 	c.Assert(rosterEntrys, NotNil)
 	c.Assert(err, IsNil)
 }
 
 func (s *XmppSuite) TestConnSend(c *C) {
 	mockOut := mockConnIOReaderWriter{}
-	conn := Conn{
+	conn := conn{
 		out: &mockOut,
 		jid: "jid",
 	}

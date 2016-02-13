@@ -14,25 +14,33 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/twstrike/coyim/cli/terminal"
 	"github.com/twstrike/coyim/client"
 	"github.com/twstrike/coyim/config"
 	"github.com/twstrike/coyim/servers"
-	"github.com/twstrike/coyim/session"
-	"github.com/twstrike/coyim/xmpp"
+	sessions "github.com/twstrike/coyim/session/access"
+	"github.com/twstrike/coyim/xmpp/data"
+	xi "github.com/twstrike/coyim/xmpp/interfaces"
+
 	"github.com/twstrike/otr3"
-	"golang.org/x/crypto/ssh/terminal"
+
 	"golang.org/x/net/proxy"
 )
 
 type cliUI struct {
-	session  *session.Session
-	events   chan interface{}
-	commands chan interface{}
+	session        sessions.Session
+	sessionFactory sessions.Factory
+	dialerFactory  func() xi.Dialer
+	events         chan interface{}
+	commands       chan interface{}
 
 	password string
-	oldState *terminal.State
-	term     *terminal.Terminal
-	input    *input
+
+	termControl terminal.Control
+	oldState    interface{}
+	term        terminal.Terminal
+
+	input *input
 
 	terminate chan bool
 
@@ -45,37 +53,42 @@ type UI interface {
 }
 
 // NewCLI creates a new cliUI instance
-func NewCLI(version string) UI {
-	oldState, err := terminal.MakeRaw(0)
+func NewCLI(version string, cf terminal.ControlFactory, sf sessions.Factory, df func() xi.Dialer) UI {
+	termControl := cf()
+	oldState, err := termControl.MakeRaw(0)
 	if err != nil {
 		panic(err.Error())
 	}
 
-	term := terminal.NewTerminal(os.Stdin, "")
-	updateTerminalSize(term)
+	term := termControl.NewTerminal(os.Stdin, "")
+	updateTerminalSize(term, termControl)
 	term.SetBracketedPasteMode(true)
 
 	resizeChan := make(chan os.Signal)
 	go func() {
 		for _ = range resizeChan {
-			updateTerminalSize(term)
+			updateTerminalSize(term, termControl)
 		}
 	}()
 	signal.Notify(resizeChan, syscall.SIGWINCH)
 
 	return &cliUI{
-		term:      term,
-		oldState:  oldState,
-		terminate: make(chan bool),
+		termControl: termControl,
+		term:        term,
+		oldState:    oldState,
+		terminate:   make(chan bool),
 		input: &input{
+			tc:          termControl,
 			term:        term,
 			uidComplete: new(priorityList),
 		},
 		RosterEditor: RosterEditor{
 			PendingRosterChan: make(chan *RosterEdit),
 		},
-		events:   make(chan interface{}),
-		commands: make(chan interface{}, 5),
+		events:         make(chan interface{}),
+		commands:       make(chan interface{}, 5),
+		sessionFactory: sf,
+		dialerFactory:  df,
 	}
 }
 
@@ -113,7 +126,7 @@ func (c *cliUI) loadConfig(configFile string) error {
 		if e != nil {
 			return e
 		}
-		if !enroll(accounts, acc, c.term) {
+		if !c.enroll(accounts, acc) {
 			return errors.New("asked to quit")
 		}
 	}
@@ -135,7 +148,7 @@ func (c *cliUI) loadConfig(configFile string) error {
 		password = account.Password
 	}
 
-	logger := &lineLogger{c.term, nil}
+	logger := &lineLogger{c.term, c.termControl, nil}
 
 	//TODO: call session.ConnectAndRegister() in this case
 	//var registerCallback xmpp.FormCallback
@@ -143,11 +156,11 @@ func (c *cliUI) loadConfig(configFile string) error {
 	//	registerCallback = c.RegisterCallback
 	//}
 
-	c.session = session.NewSession(accounts, account)
-	c.session.SessionEventHandler = c
+	c.session = c.sessionFactory(accounts, account, c.dialerFactory)
+	c.session.SetSessionEventHandler(c)
 	c.session.Subscribe(c.events)
 
-	c.session.ConnectionLogger = logger
+	c.session.SetConnectionLogger(logger)
 	if err := c.session.Connect(password); err != nil {
 		c.alert(err.Error())
 		return err
@@ -162,7 +175,7 @@ func (c *cliUI) quit() {
 }
 
 func (c *cliUI) SaveConf() {
-	c.session.Config.Save(config.FunctionKeySupplier(c.getMasterPassword))
+	c.session.Config().Save(config.FunctionKeySupplier(c.getMasterPassword))
 }
 
 func (c *cliUI) Loop() {
@@ -182,7 +195,7 @@ func (c *cliUI) Loop() {
 
 func (c *cliUI) close() {
 	if c.oldState != nil {
-		terminal.Restore(0, c.oldState)
+		c.termControl.Restore(0, c.oldState)
 	}
 
 	if c.term != nil {
@@ -191,63 +204,66 @@ func (c *cliUI) close() {
 }
 
 func (c *cliUI) info(m string) {
-	info(c.term, m)
+	info(c.term, c.termControl, m)
 }
 
 func (c *cliUI) warn(m string) {
-	warn(c.term, m)
+	warn(c.term, c.termControl, m)
 }
 
 func (c *cliUI) alert(m string) {
-	alert(c.term, m)
+	alert(c.term, c.termControl, m)
+}
+
+func (c *cliUI) critical(m string) {
+	critical(c.term, c.termControl, m)
 }
 
 func (c *cliUI) RegisterCallback(title, instructions string, fields []interface{}) error {
 	user := c.session.GetConfig().Account
-	return promptForForm(c.term, user, c.password, title, instructions, fields)
+	return c.promptForForm(user, c.password, title, instructions, fields)
 }
 
 func (c *cliUI) printConversationInfo(uid string, conversation client.Conversation) {
 	s := c.session
-	term := c.term
 
 	fpr := conversation.TheirFingerprint()
 	fprUID := s.GetConfig().UserIDForVerifiedFingerprint(fpr)
-	info(term, fmt.Sprintf("  Fingerprint  for %s: %X", uid, fpr))
-	info(term, fmt.Sprintf("  Session  ID  for %s: %X", uid, conversation.GetSSID()))
+	c.info(fmt.Sprintf("  Fingerprint  for %s: %X", uid, fpr))
+	c.info(fmt.Sprintf("  Session  ID  for %s: %X", uid, conversation.GetSSID()))
 	if fprUID == uid {
-		info(term, fmt.Sprintf("  Identity key for %s is verified", uid))
+		c.info(fmt.Sprintf("  Identity key for %s is verified", uid))
 	} else if len(fprUID) > 1 {
-		alert(term, fmt.Sprintf("  Warning: %s is using an identity key which was verified for %s", uid, fprUID))
+		c.alert(fmt.Sprintf("  Warning: %s is using an identity key which was verified for %s", uid, fprUID))
 	} else if s.GetConfig().HasFingerprint(uid) {
-		critical(term, fmt.Sprintf("  Identity key for %s is incorrect", uid))
+		c.critical(fmt.Sprintf("  Identity key for %s is incorrect", uid))
 	} else {
-		alert(term, fmt.Sprintf("  Identity key for %s is not verified. You should use /otr-auth or /otr-authqa or /otr-authoob to verify their identity", uid))
+		c.alert(fmt.Sprintf("  Identity key for %s is not verified. You should use /otr-auth or /otr-authqa or /otr-authoob to verify their identity", uid))
 	}
 }
 
 // promptForForm runs an XEP-0004 form and collects responses from the user.
-func promptForForm(term *terminal.Terminal, user, password, title, instructions string, fields []interface{}) error {
-	info(term, "The server has requested the following information. Text that has come from the server will be shown in red.")
+func (c *cliUI) promptForForm(user, password, title, instructions string, fields []interface{}) error {
+	c.info("The server has requested the following information. Text that has come from the server will be shown in red.")
 
 	// formStringForPrinting takes a string form the form and returns an
 	// escaped version with codes to make it show as red.
 	formStringForPrinting := func(s string) string {
 		var line []byte
 
-		line = append(line, term.Escape.Red...)
+		line = append(line, c.termControl.Escape(c.term).Red...)
 		line = appendTerminalEscaped(line, []byte(s))
-		line = append(line, term.Escape.Reset...)
+		line = append(line, c.termControl.Escape(c.term).Reset...)
 		return string(line)
 	}
 
 	write := func(s string) {
-		term.Write([]byte(s))
+		c.term.Write([]byte(s))
 	}
 
 	var tmpDir string
 
-	showMediaEntries := func(questionNumber int, medias [][]xmpp.Media) {
+	showMediaEntries := func(questionNumber int, medias [][]data.Media) {
 		if len(medias) == 0 {
 			return
 		}
@@ -315,19 +331,19 @@ func promptForForm(term *terminal.Terminal, user, password, title, instructions 
 		write("\n")
 
 		switch field := field.(type) {
-		case *xmpp.FixedFormField:
+		case *data.FixedFormField:
 			write(formStringForPrinting(field.Text))
 			write("\n")
 			questionNumber--
 
-		case *xmpp.BooleanFormField:
+		case *data.BooleanFormField:
 			write(fmt.Sprintf("%d. %s\n\n", questionNumber, formStringForPrinting(field.Label)))
 			showMediaEntries(questionNumber, field.Media)
-			term.SetPrompt("Please enter yes, y, no or n: ")
+			c.term.SetPrompt("Please enter yes, y, no or n: ")
 
 		TryAgain:
 			for {
-				answer, err := term.ReadLine()
+				answer, err := c.term.ReadLine()
 				if err != nil {
 					return err
 				}
@@ -342,7 +358,7 @@ func promptForForm(term *terminal.Terminal, user, password, title, instructions 
 				break
 			}
 
-		case *xmpp.TextFormField:
+		case *data.TextFormField:
 			switch field.Label {
 			case "CAPTCHA web page":
 				if strings.HasPrefix(field.Default, "http") {
@@ -377,11 +393,11 @@ func promptForForm(term *terminal.Terminal, user, password, title, instructions 
 			} else {
 				write("Please enter response")
 			}
-			term.SetPrompt("> ")
+			c.term.SetPrompt("> ")
 			if field.Private {
-				field.Result, err = term.ReadPassword("> ")
+				field.Result, err = c.term.ReadPassword("> ")
 			} else {
-				field.Result, err = term.ReadLine()
+				field.Result, err = c.term.ReadLine()
 			}
 			if err != nil {
 				return err
@@ -390,15 +406,15 @@ func promptForForm(term *terminal.Terminal, user, password, title, instructions 
 				field.Result = field.Default
 			}
 
-		case *xmpp.MultiTextFormField:
+		case *data.MultiTextFormField:
 			write(fmt.Sprintf("%d. %s\n\n", questionNumber, formStringForPrinting(field.Label)))
 			showMediaEntries(questionNumber, field.Media)
 
 			write("Please enter one or more responses, terminated by an empty line\n")
-			term.SetPrompt("> ")
+			c.term.SetPrompt("> ")
 
 			for {
-				line, err := term.ReadLine()
+				line, err := c.term.ReadLine()
 				if err != nil {
 					return err
 				}
@@ -408,18 +424,18 @@ func promptForForm(term *terminal.Terminal, user, password, title, instructions 
 				field.Results = append(field.Results, line)
 			}
 
-		case *xmpp.SelectionFormField:
+		case *data.SelectionFormField:
 			write(fmt.Sprintf("%d. %s\n\n", questionNumber, formStringForPrinting(field.Label)))
 			showMediaEntries(questionNumber, field.Media)
 
 			for i, opt := range field.Values {
 				write(fmt.Sprintf("  %d. %s\n\n", i+1, formStringForPrinting(opt)))
 			}
-			term.SetPrompt("Please enter the number of your selection: ")
+			c.term.SetPrompt("Please enter the number of your selection: ")
 
 		TryAgain2:
 			for {
-				answer, err := term.ReadLine()
+				answer, err := c.term.ReadLine()
 				if err != nil {
 					return err
 				}
@@ -434,18 +450,18 @@ func promptForForm(term *terminal.Terminal, user, password, title, instructions 
 				break
 			}
 
-		case *xmpp.MultiSelectionFormField:
+		case *data.MultiSelectionFormField:
 			write(fmt.Sprintf("%d. %s\n\n", questionNumber, formStringForPrinting(field.Label)))
 			showMediaEntries(questionNumber, field.Media)
 
 			for i, opt := range field.Values {
 				write(fmt.Sprintf("  %d. %s\n\n", i+1, formStringForPrinting(opt)))
 			}
-			term.SetPrompt("Please enter the numbers of zero or more of the above, separated by spaces: ")
+			c.term.SetPrompt("Please enter the numbers of zero or more of the above, separated by spaces: ")
 
 		TryAgain3:
 			for {
-				answer, err := term.ReadLine()
+				answer, err := c.term.ReadLine()
 				if err != nil {
 					return err
 				}
@@ -501,8 +517,8 @@ func (c *cliUI) watchRosterEdits() {
 		//DELETE
 		for _, jid := range toDelete {
 			c.info("Deleting roster entry for " + jid)
-			_, _, err := c.session.Conn.SendIQ("" /* to the server */, "set", xmpp.RosterRequest{
-				Item: xmpp.RosterRequestItem{
+			_, _, err := c.session.Conn().SendIQ("" /* to the server */, "set", data.RosterRequest{
+				Item: data.RosterRequestItem{
 					Jid:          jid,
 					Subscription: "remove",
 				},
@@ -513,14 +529,14 @@ func (c *cliUI) watchRosterEdits() {
 			}
 
 			c.session.GetConfig().RemovePeer(jid)
-			c.ExecuteCmd(client.SaveApplicationConfigCmd{})
+			c.session.CommandManager().ExecuteCmd(client.SaveApplicationConfigCmd{})
 		}
 
 		//EDIT
 		for _, entry := range toEdit {
 			c.info("Updating roster entry for " + entry.Jid)
-			_, _, err := c.session.Conn.SendIQ("" /* to the server */, "set", xmpp.RosterRequest{
-				Item: xmpp.RosterRequestItem{
+			_, _, err := c.session.Conn().SendIQ("" /* to the server */, "set", data.RosterRequest{
+				Item: data.RosterRequestItem{
 					Jid:   entry.Jid,
 					Name:  entry.Name,
 					Group: entry.Group,
@@ -535,8 +551,8 @@ func (c *cliUI) watchRosterEdits() {
 		//ADD
 		for _, entry := range toAdd {
 			c.info("Adding roster entry for " + entry.Jid)
-			_, _, err := c.session.Conn.SendIQ("" /* to the server */, "set", xmpp.RosterRequest{
-				Item: xmpp.RosterRequestItem{
+			_, _, err := c.session.Conn().SendIQ("" /* to the server */, "set", data.RosterRequest{
+				Item: data.RosterRequestItem{
 					Jid:   entry.Jid,
 					Name:  entry.Name,
 					Group: entry.Group,
@@ -559,7 +575,6 @@ func (c *cliUI) watchInputCommands() {
 	go c.input.processCommands(commandChan)
 	c.term.SetPrompt("> ")
 
-	term := c.term
 	s := c.session
 	conf := s.GetConfig()
 
@@ -570,34 +585,34 @@ CommandLoop:
 		select {
 		case cmd, ok := <-commandChan:
 			if !ok {
-				warn(term, "Exiting because command channel closed")
+				c.warn("Exiting because command channel closed")
 				break CommandLoop
 			}
-			s.LastActionTime = time.Now()
+			s.SetLastActionTime(time.Now())
 			switch cmd := cmd.(type) {
 			case quitCommand:
 				break CommandLoop
 			case versionCommand:
-				replyChan, cookie, err := s.Conn.SendIQ(cmd.User, "get", xmpp.VersionQuery{})
+				replyChan, cookie, err := s.Conn().SendIQ(cmd.User, "get", data.VersionQuery{})
 				if err != nil {
 
-					alert(term, "Error sending version request: "+err.Error())
+					c.alert("Error sending version request: " + err.Error())
 					continue
 				}
 
 				s.Timeout(cookie, time.Now().Add(5*time.Second))
 				go s.AwaitVersionReply(replyChan, cmd.User)
 			case rosterCommand:
-				info(term, "Current roster:")
+				c.info("Current roster:")
 				maxLen := 0
-				for _, item := range s.R.ToSlice() {
+				for _, item := range s.R().ToSlice() {
 					if maxLen < len(item.Jid) {
 						maxLen = len(item.Jid)
 					}
 				}
 
-				for _, item := range s.R.ToSlice() {
-					state, _, ok := s.R.StateOf(item.Jid)
+				for _, item := range s.R().ToSlice() {
+					state, _, ok := s.R().StateOf(item.Jid)
 
 					line := ""
 					if ok {
@@ -617,52 +632,52 @@ CommandLoop:
 					if ok {
 						line += "\t" + state
 					}
-					info(term, line)
+					c.info(line)
 				}
 			case rosterEditCommand:
 				if c.PendingRosterEdit != nil {
-					warn(term, "Aborting previous roster edit")
+					c.warn("Aborting previous roster edit")
 					c.PendingRosterEdit = nil
 				}
 
-				currR := s.R.ToSlice()
+				currR := s.R().ToSlice()
 
-				c.RosterEditor.Roster = make([]xmpp.RosterEntry, len(currR))
-				rosterCopy := make([]xmpp.RosterEntry, len(currR))
+				c.RosterEditor.Roster = make([]data.RosterEntry, len(currR))
+				rosterCopy := make([]data.RosterEntry, len(currR))
 				for ix, e := range currR {
 					c.RosterEditor.Roster[ix] = e.ToEntry()
 					rosterCopy[ix] = e.ToEntry()
 				}
 
-				go func(rosterCopy []xmpp.RosterEntry) {
+				go func(rosterCopy []data.RosterEntry) {
 					err := c.EditRoster(rosterCopy)
 					if err != nil {
-						alert(term, err.Error())
+						c.alert(err.Error())
 					}
 				}(rosterCopy)
 
 			case rosterEditDoneCommand:
 				if c.PendingRosterEdit == nil {
-					warn(term, "No roster edit in progress. Use /rosteredit to start one")
+					c.warn("No roster edit in progress. Use /rosteredit to start one")
 					continue
 				}
 
 				go func(edit RosterEdit) {
 					err := c.LoadEditedRoster(edit)
 					if err != nil {
-						alert(term, err.Error())
+						c.alert(err.Error())
 					}
 				}(*c.PendingRosterEdit)
 
 			case toggleStatusUpdatesCommand:
 				s.GetConfig().HideStatusUpdates = !s.GetConfig().HideStatusUpdates
-				s.ExecuteCmd(client.SaveApplicationConfigCmd{})
+				s.CommandManager().ExecuteCmd(client.SaveApplicationConfigCmd{})
 
 				// Tell the user the current state of the statuses
 				if s.GetConfig().HideStatusUpdates {
-					info(term, "Status updates disabled")
+					c.info("Status updates disabled")
 				} else {
-					info(term, "Status updates enabled")
+					c.info("Status updates enabled")
 				}
 			case confirmCommand:
 				s.HandleConfirmOrDeny(cmd.User, true /* confirm */)
@@ -672,7 +687,7 @@ CommandLoop:
 				s.RequestPresenceSubscription(cmd.User)
 			case msgCommand:
 				message := []byte(cmd.msg)
-				conversation, exists := s.GetConversationWith(cmd.to)
+				conversation, exists := s.ConversationManager().GetConversationWith(cmd.to)
 
 				if exists {
 					isEncrypted := conversation.IsEncrypted()
@@ -681,164 +696,164 @@ CommandLoop:
 					}
 
 					if !isEncrypted && conf.ShouldEncryptTo(cmd.to) {
-						warn(term, fmt.Sprintf("Did not send: no encryption established with %s", cmd.to))
+						c.warn(fmt.Sprintf("Did not send: no encryption established with %s", cmd.to))
 						continue
 					}
 				}
 
-				err := conversation.Send(s.Conn, message)
+				err := conversation.Send(s.Conn(), message)
 				if err != nil {
-					alert(term, err.Error())
+					c.alert(err.Error())
 					break
 				}
 
 			case otrCommand:
-				conversation, _ := s.GetConversationWith(string(cmd.User))
+				conversation, _ := s.ConversationManager().GetConversationWith(string(cmd.User))
 				conversation.StartEncryptedChat(s)
 			case otrInfoCommand:
-				for _, pk := range s.PrivateKeys {
-					info(term, fmt.Sprintf("Your OTR fingerprint is %x", pk.PublicKey().Fingerprint()))
+				for _, pk := range s.PrivateKeys() {
+					c.info(fmt.Sprintf("Your OTR fingerprint is %x", pk.PublicKey().Fingerprint()))
 				}
-				for to, conversation := range s.Conversations() {
+				for to, conversation := range s.ConversationManager().Conversations() {
 					if conversation.IsEncrypted() {
-						info(term, fmt.Sprintf("Secure session with %s underway:", to))
+						c.info(fmt.Sprintf("Secure session with %s underway:", to))
 						c.printConversationInfo(to, conversation)
 					}
 				}
 			case endOTRCommand:
 				to := string(cmd.User)
-				conversation, exists := s.GetConversationWith(to)
+				conversation, exists := s.ConversationManager().GetConversationWith(to)
 
 				if !exists {
-					alert(term, "No secure session established")
+					c.alert("No secure session established")
 					break
 				}
 
 				err := conversation.EndEncryptedChat(s)
 				if err != nil {
-					alert(term, "Can't end the conversation - it seems there is no randomness in your system. This could be a significant problem.")
+					c.alert("Can't end the conversation - it seems there is no randomness in your system. This could be a significant problem.")
 					break
 				}
 
 				c.input.SetPromptForTarget(cmd.User, false)
-				warn(term, "OTR conversation ended with "+cmd.User)
+				c.warn("OTR conversation ended with " + cmd.User)
 			case authQACommand:
 				to := string(cmd.User)
-				conversation, exists := s.GetConversationWith(to)
+				conversation, exists := s.ConversationManager().GetConversationWith(to)
 				if !exists {
-					alert(term, "Can't authenticate without a secure conversation established")
+					c.alert("Can't authenticate without a secure conversation established")
 					break
 				}
 
-				if s.OtrEventHandler[to].WaitingForSecret {
-					s.OtrEventHandler[to].WaitingForSecret = false
-					err = conversation.ProvideAuthenticationSecret(s.Conn, []byte(cmd.Secret))
+				if s.OtrEventHandler()[to].WaitingForSecret {
+					s.OtrEventHandler()[to].WaitingForSecret = false
+					err = conversation.ProvideAuthenticationSecret(s.Conn(), []byte(cmd.Secret))
 				} else {
-					err = conversation.StartAuthenticate(s.Conn, cmd.Question, []byte(cmd.Secret))
+					err = conversation.StartAuthenticate(s.Conn(), cmd.Question, []byte(cmd.Secret))
 				}
 
 				if err != nil {
-					alert(term, "Error while starting authentication with "+to+": "+err.Error())
+					c.alert("Error while starting authentication with " + to + ": " + err.Error())
 				}
 
 			case authOobCommand:
 				fpr, err := hex.DecodeString(cmd.Fingerprint)
 				if err != nil {
-					alert(term, fmt.Sprintf("Invalid fingerprint %s - not authenticated", cmd.Fingerprint))
+					c.alert(fmt.Sprintf("Invalid fingerprint %s - not authenticated", cmd.Fingerprint))
 					break
 				}
 
 				idForFpr := s.GetConfig().UserIDForVerifiedFingerprint(fpr)
 				if len(idForFpr) != 0 {
-					alert(term, fmt.Sprintf("Fingerprint %s already belongs to %s", cmd.Fingerprint, idForFpr))
+					c.alert(fmt.Sprintf("Fingerprint %s already belongs to %s", cmd.Fingerprint, idForFpr))
 					break
 				}
 
-				s.ExecuteCmd(client.AuthorizeFingerprintCmd{
+				s.CommandManager().ExecuteCmd(client.AuthorizeFingerprintCmd{
 					Account:     s.GetConfig(),
 					Peer:        cmd.User,
 					Fingerprint: fpr,
 				})
 
-				info(term, fmt.Sprintf("Saved manually verified fingerprint %s for %s", cmd.Fingerprint, cmd.User))
+				c.info(fmt.Sprintf("Saved manually verified fingerprint %s for %s", cmd.Fingerprint, cmd.User))
 			case awayCommand:
-				s.Conn.SignalPresence("away")
+				s.Conn().SignalPresence("away")
 			case chatCommand:
-				s.Conn.SignalPresence("chat")
+				s.Conn().SignalPresence("chat")
 			case dndCommand:
-				s.Conn.SignalPresence("dnd")
+				s.Conn().SignalPresence("dnd")
 			case xaCommand:
-				s.Conn.SignalPresence("xa")
+				s.Conn().SignalPresence("xa")
 			case onlineCommand:
-				s.Conn.SignalPresence("")
+				s.Conn().SignalPresence("")
 			}
 		}
 	}
 }
 
-func enroll(conf *config.ApplicationConfig, currentConf *config.Account, term *terminal.Terminal) bool {
+func (c *cliUI) enroll(conf *config.ApplicationConfig, currentConf *config.Account) bool {
 	var err error
-	warn(term, "Enrolling new config file")
+	c.warn("Enrolling new config file")
 
 	var domain string
 	for {
-		term.SetPrompt("Account (i.e. user@example.com, enter to quit): ")
-		if currentConf.Account, err = term.ReadLine(); err != nil || len(currentConf.Account) == 0 {
+		c.term.SetPrompt("Account (i.e. user@example.com, enter to quit): ")
+		if currentConf.Account, err = c.term.ReadLine(); err != nil || len(currentConf.Account) == 0 {
 			return false
 		}
 
 		parts := strings.SplitN(currentConf.Account, "@", 2)
 		if len(parts) != 2 {
-			alert(term, "invalid username (want user@domain): "+currentConf.Account)
+			c.alert("invalid username (want user@domain): " + currentConf.Account)
 			continue
 		}
 		domain = parts[1]
 		break
 	}
 
-	term.SetPrompt("Enable debug logging to /tmp/xmpp-client-debug.log? ")
-	if debugLog, err := term.ReadLine(); err != nil || !config.ParseYes(debugLog) {
-		info(term, "Not enabling debug logging...")
+	c.term.SetPrompt("Enable debug logging to /tmp/xmpp-client-debug.log? ")
+	if debugLog, err := c.term.ReadLine(); err != nil || !config.ParseYes(debugLog) {
+		c.info("Not enabling debug logging...")
 	} else {
-		info(term, "Debug logging enabled...")
+		c.info("Debug logging enabled...")
 		conf.RawLogFile = "/tmp/xmpp-client-debug.log"
 	}
 
-	term.SetPrompt("Use Tor?: ")
-	if useTorQuery, err := term.ReadLine(); err != nil || len(useTorQuery) == 0 || !config.ParseYes(useTorQuery) {
-		info(term, "Not using Tor...")
+	c.term.SetPrompt("Use Tor?: ")
+	if useTorQuery, err := c.term.ReadLine(); err != nil || len(useTorQuery) == 0 || !config.ParseYes(useTorQuery) {
+		c.info("Not using Tor...")
 		currentConf.RequireTor = false
 	} else {
-		info(term, "Using Tor...")
+		c.info("Using Tor...")
 		currentConf.RequireTor = true
 	}
 
-	term.SetPrompt("File to import libotr private key from (enter to generate): ")
+	c.term.SetPrompt("File to import libotr private key from (enter to generate): ")
 
 	var pkeys []otr3.PrivateKey
 	for {
-		importFile, err := term.ReadLine()
+		importFile, err := c.term.ReadLine()
 		if err != nil {
 			return false
 		}
 		if len(importFile) > 0 {
 			privKeyBytes, err := ioutil.ReadFile(importFile)
 			if err != nil {
-				alert(term, "Failed to open private key file: "+err.Error())
+				c.alert("Failed to open private key file: " + err.Error())
 				continue
 			}
 			var priv otr3.DSAPrivateKey
 			if !priv.Import(privKeyBytes) {
-				alert(term, "Failed to parse libotr private key file (the parser is pretty simple I'm afraid)")
+				c.alert("Failed to parse libotr private key file (the parser is pretty simple I'm afraid)")
 				continue
 			}
 			pkeys = append(pkeys, &priv)
 			break
 		} else {
-			info(term, "Generating private key...")
+			c.info("Generating private key...")
 			pkeys, err = otr3.GenerateMissingKeys([][]byte{})
 			if err != nil {
-				alert(term, "Failed to generate private key - this implies something is really bad with your system, so we bail out now")
+				c.alert("Failed to generate private key - this implies something is really bad with your system, so we bail out now")
 				return false
 			}
 			break
@@ -853,9 +868,9 @@ func enroll(conf *config.ApplicationConfig, currentConf *config.Account, term *t
 	// Force Tor for servers with well known Tor hidden services.
 	if _, ok := servers.Get(domain); ok && currentConf.RequireTor {
 		const torProxyURL = "socks5://127.0.0.1:9050"
-		info(term, "It appears that you are using a well known server and we will use its Tor hidden service to connect.")
+		c.info("It appears that you are using a well known server and we will use its Tor hidden service to connect.")
 		currentConf.Proxies = []string{torProxyURL}
-		term.SetPrompt("> ")
+		c.term.SetPrompt("> ")
 		return true
 	}
 
@@ -864,10 +879,10 @@ func enroll(conf *config.ApplicationConfig, currentConf *config.Account, term *t
 	if currentConf.RequireTor {
 		proxyDefaultPrompt = ", which is the default"
 	}
-	term.SetPrompt("Proxy (i.e socks5://127.0.0.1:9050" + proxyDefaultPrompt + "): ")
+	c.term.SetPrompt("Proxy (i.e socks5://127.0.0.1:9050" + proxyDefaultPrompt + "): ")
 
 	for {
-		if proxyStr, err = term.ReadLine(); err != nil {
+		if proxyStr, err = c.term.ReadLine(); err != nil {
 			return false
 		}
 		if len(proxyStr) == 0 {
@@ -879,17 +894,17 @@ func enroll(conf *config.ApplicationConfig, currentConf *config.Account, term *t
 		}
 		u, err := url.Parse(proxyStr)
 		if err != nil {
-			alert(term, "Failed to parse "+proxyStr+" as a URL: "+err.Error())
+			c.alert("Failed to parse " + proxyStr + " as a URL: " + err.Error())
 			continue
 		}
 		if _, err = proxy.FromURL(u, proxy.Direct); err != nil {
-			alert(term, "Failed to parse "+proxyStr+" as a proxy: "+err.Error())
+			c.alert("Failed to parse " + proxyStr + " as a proxy: " + err.Error())
 			continue
 		}
 		break
 	}
 
-	term.SetPrompt("> ")
+	c.term.SetPrompt("> ")
 
 	return true
 }

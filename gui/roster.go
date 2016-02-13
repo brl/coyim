@@ -9,6 +9,7 @@ import (
 
 	"github.com/gotk3/gotk3/gdk"
 	"github.com/gotk3/gotk3/gtk"
+	"github.com/twstrike/coyim/config"
 	rosters "github.com/twstrike/coyim/roster"
 	"github.com/twstrike/coyim/ui"
 )
@@ -124,10 +125,32 @@ func (r *roster) createAccountPeerPopup(jid string, account *account, bt *gdk.Ev
 		"on_dump_info": func() {
 			r.debugPrintRosterFor(account.session.GetConfig().Account)
 		},
+		"on_rename_signal": func() {
+			r.renameContactPopup(account.session.GetConfig(), jid)
+		},
 	})
 
 	mn.ShowAll()
 	mn.PopupAtMouseCursor(nil, nil, int(bt.Button()), bt.Time())
+}
+
+func (r *roster) renameContactPopup(conf *config.Account, jid string) {
+	builder := builderForDefinition("RenameContact")
+	obj, _ := builder.GetObject("RenameContactPopup")
+	popup := obj.(*gtk.Dialog)
+	builder.ConnectSignals(map[string]interface{}{
+		"on_rename_signal": func() {
+			obj, _ = builder.GetObject("rename")
+			renameTxt := obj.(*gtk.Entry)
+			newName, _ := renameTxt.GetText()
+			conf.RenamePeer(jid, newName)
+			r.ui.SaveConfig()
+			r.redraw()
+			popup.Destroy()
+		},
+	})
+	popup.SetTransientFor(r.ui.window)
+	popup.ShowAll()
 }
 
 func (r *roster) createAccountPopup(jid string, account *account, bt *gdk.EventButton) {
@@ -137,11 +160,11 @@ func (r *roster) createAccountPopup(jid string, account *account, bt *gdk.EventB
 
 	builder.ConnectSignals(map[string]interface{}{
 		"on_connect": func() {
-			account.session.WantToBeOnline = true
+			account.session.SetWantToBeOnline(true)
 			account.Connect()
 		},
 		"on_disconnect": func() {
-			account.session.WantToBeOnline = false
+			account.session.SetWantToBeOnline(false)
 			account.disconnect()
 		},
 		"on_edit": account.edit,
@@ -157,7 +180,7 @@ func (r *roster) createAccountPopup(jid string, account *account, bt *gdk.EventB
 	disconnect := dconnx.(*gtk.MenuItem)
 
 	connect.SetSensitive(account.session.IsDisconnected())
-	disconnect.SetSensitive(account.session.IsConnected())
+	disconnect.SetSensitive(!account.session.IsDisconnected())
 
 	mn.ShowAll()
 	mn.PopupAtMouseCursor(nil, nil, int(bt.Button()), bt.Time())
@@ -204,22 +227,17 @@ func (r *roster) onActivateBuddy(v *gtk.TreeView, path *gtk.TreePath) {
 		return
 	}
 
-	r.openConversationWindow(account, jid)
+	r.openConversationView(account, jid, true)
 }
 
-func (r *roster) openConversationWindow(account *account, to string) (*conversationWindow, error) {
+func (r *roster) openConversationView(account *account, to string, userInitiated bool) (conversationView, error) {
 	c, ok := account.getConversationWith(to)
 
 	if !ok {
-		textBuffer := r.ui.getTags().createTextBuffer()
-		c = account.createConversationWindow(to, r.ui.displaySettings, textBuffer)
-
-		r.ui.connectShortcutsChildWindow(c.win)
-		r.ui.connectShortcutsConversationWindow(c)
-		c.parentWin = r.ui.window
+		c = account.createConversationView(to, r.ui)
 	}
 
-	c.Show()
+	c.show(userInitiated)
 	return c, nil
 }
 
@@ -245,7 +263,7 @@ func (r *roster) presenceUpdated(account *account, from, show, showStatus string
 
 func (r *roster) messageReceived(account *account, from string, timestamp time.Time, encrypted bool, message []byte) {
 	doInUIThread(func() {
-		conv, err := r.openConversationWindow(account, from)
+		conv, err := r.openConversationView(account, from, false)
 		if err != nil {
 			return
 		}
@@ -368,7 +386,7 @@ func (r *roster) redrawMerged() {
 
 	grp := rosters.TopLevelGroup()
 	for account, contacts := range r.ui.accountManager.getAllContacts() {
-		contacts.AddTo(grp, account.session.GroupDelimiter)
+		contacts.AddTo(grp, account.session.GroupDelimiter())
 	}
 
 	accountCounter := &counter{}
@@ -439,7 +457,7 @@ func (r *roster) redrawSeparateAccount(account *account, contacts *rosters.List,
 
 	accountCounter := &counter{}
 
-	grp := contacts.Grouped(account.session.GroupDelimiter)
+	grp := contacts.Grouped(account.session.GroupDelimiter())
 	parentName := account.session.GetConfig().Account
 	r.displayGroup(grp, parentIter, accountCounter, showOffline, parentName)
 
@@ -482,6 +500,7 @@ func (r *roster) sortedAccounts() []*account {
 		}
 		as = append(as, account)
 	}
+	//TODO sort by nickname if available
 	sort.Sort(byAccountNameAlphabetic(as))
 	return as
 }

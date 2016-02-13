@@ -23,7 +23,6 @@ func (*defAccountRegistration) String() string {
 
   <object class="GtkDialog" id="dialog">
     <property name="title" translatable="yes">Choose a server to register your account</property>
-    <signal name="response" handler="response-handler" />
     <signal name="close" handler="close-handler" />
 
     <child internal-child="vbox">
@@ -83,8 +82,8 @@ func (*defAccountRegistration) String() string {
     </child>
 
     <action-widgets>
-      <action-widget response="GTK_RESPONSE_CANCEL">btn-cancel</action-widget>
-      <action-widget response="GTK_RESPONSE_APPLY" default="true">btn-apply</action-widget>
+      <action-widget response="cancel">btn-cancel</action-widget>
+      <action-widget response="apply" default="true">btn-apply</action-widget>
     </action-widgets>
   </object>
 </interface>

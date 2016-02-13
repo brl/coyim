@@ -6,7 +6,8 @@ import (
 
 	"github.com/gotk3/gotk3/gtk"
 	"github.com/twstrike/coyim/config"
-	"github.com/twstrike/coyim/xmpp"
+	"github.com/twstrike/coyim/xmpp/data"
+	"github.com/twstrike/coyim/xmpp/interfaces"
 )
 
 var (
@@ -29,7 +30,7 @@ func (f *registrationForm) accepted() error {
 
 	//Find the fields we need to copy from the form to the account
 	for _, field := range f.fields {
-		ff := field.field.(*xmpp.TextFormField)
+		ff := field.field.(*data.TextFormField)
 		w := field.widget.(*gtk.Entry)
 		ff.Result, _ = w.GetText()
 
@@ -92,13 +93,14 @@ func (f *registrationForm) renderForm(title, instructions string, fields []inter
 	return <-wait
 }
 
-func requestAndRenderRegistrationForm(server string, formHandler xmpp.FormCallback, saveFn func()) error {
-	policy := config.ConnectionPolicy{}
+func requestAndRenderRegistrationForm(server string, formHandler data.FormCallback, saveFn func(), df func() interfaces.Dialer) error {
+	policy := config.ConnectionPolicy{DialerFactory: df}
 
 	//TODO: this would not be necessary if RegisterAccount did not use it
 	conf := &config.Account{
 		Account:    "@" + server,
 		RequireTor: true,
+		Proxies:    []string{"tor-auto://"},
 	}
 
 	//TODO: this should receive only a JID domainpart
@@ -126,7 +128,7 @@ func buildWidgetsForFields(fields []interface{}) []formField {
 
 	for _, f := range fields {
 		switch field := f.(type) {
-		case *xmpp.TextFormField:
+		case *data.TextFormField:
 			//TODO: notify if it is required
 			l, _ := gtk.LabelNew(field.Label)
 			l.SetSelectable(true)

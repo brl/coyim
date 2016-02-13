@@ -5,15 +5,13 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
-	"regexp"
 	"runtime"
-	"sort"
-	"strings"
 
 	"github.com/twstrike/coyim/config"
 	"github.com/twstrike/coyim/i18n"
 	rosters "github.com/twstrike/coyim/roster"
+	sessions "github.com/twstrike/coyim/session/access"
+	"github.com/twstrike/coyim/xmpp/interfaces"
 
 	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
@@ -21,10 +19,13 @@ import (
 
 type gtkUI struct {
 	roster           *roster
-	window           *gtk.Window
+	app              *gtk.Application
+	window           *gtk.ApplicationWindow
 	accountsMenu     *gtk.MenuItem
 	notificationArea *gtk.Box
 	viewMenu         *viewMenu
+
+	unified *unifiedLayout
 
 	config *config.ApplicationConfig
 
@@ -40,6 +41,10 @@ type gtkUI struct {
 	setShowAdvancedSettingsRequest       chan bool
 
 	commands chan interface{}
+
+	sessionFactory sessions.Factory
+
+	dialerFactory func() interfaces.Dialer
 }
 
 var coyimVersion string
@@ -57,7 +62,7 @@ func argsWithApplicationName() *[]string {
 }
 
 // NewGTK returns a new client for a GTK ui
-func NewGTK(version string) UI {
+func NewGTK(version string, sf sessions.Factory, df func() interfaces.Dialer) UI {
 	coyimVersion = version
 	//*.mo files should be in ./i18n/locale_code.utf8/LC_MESSAGES/
 	glib.InitI18n("coy", "./i18n")
@@ -67,11 +72,24 @@ func NewGTK(version string) UI {
 		commands: make(chan interface{}, 5),
 		toggleConnectAllAutomaticallyRequest: make(chan bool, 100),
 		setShowAdvancedSettingsRequest:       make(chan bool, 100),
+		dialerFactory:                        df,
+	}
+
+	var err error
+	flags := glib.APPLICATION_FLAGS_NONE
+	if *config.MultiFlag {
+		flags = glib.APPLICATION_NON_UNIQUE
+	}
+	ret.app, err = gtk.ApplicationNew("im.coy.CoyIM", flags)
+	if err != nil {
+		panic(err)
 	}
 
 	ret.keySupplier = config.CachingKeySupplier(ret.getMasterPassword)
 
 	ret.accountManager = newAccountManager(ret)
+
+	ret.sessionFactory = sf
 
 	return ret
 }
@@ -141,7 +159,7 @@ func (u *gtkUI) loadConfig(configFile string) {
 }
 
 func (u *gtkUI) configLoaded(c *config.ApplicationConfig) {
-	u.buildAccounts(c)
+	u.buildAccounts(c, u.sessionFactory, u.dialerFactory)
 
 	doInUIThread(func() {
 		if u.viewMenu != nil {
@@ -169,7 +187,7 @@ func (u *gtkUI) saveConfigInternal() error {
 		return err
 	}
 
-	u.addNewAccountsFromConfig(u.config)
+	u.addNewAccountsFromConfig(u.config, u.sessionFactory, u.dialerFactory)
 
 	if u.window != nil {
 		u.window.Emit(accountChangedSignal.String())
@@ -219,15 +237,16 @@ func init() {
 }
 
 func (u *gtkUI) Loop() {
-	go u.watchCommands()
-	go u.observeAccountEvents()
+	u.app.Connect("activate", func() {
+		go u.watchCommands()
+		go u.observeAccountEvents()
 
-	doInUIThread(func() {
+		applyHacks()
 		u.mainWindow()
 		go u.loadConfig(*config.ConfigFile)
 	})
 
-	gtk.Main()
+	u.app.Run([]string{})
 }
 
 func (u *gtkUI) initRoster() {
@@ -251,7 +270,8 @@ func (u *gtkUI) mainWindow() {
 		panic(err)
 	}
 
-	u.window = win.(*gtk.Window)
+	u.window = win.(*gtk.ApplicationWindow)
+	u.window.SetApplication(u.app)
 
 	u.displaySettings = detectCurrentDisplaySettingsFrom(&u.window.Bin.Container.Widget)
 
@@ -273,10 +293,17 @@ func (u *gtkUI) mainWindow() {
 	u.displaySettings.defaultSettingsOn(&u.viewMenu.offline.MenuItem.Bin.Container.Widget)
 
 	u.initMenuBar()
-	vbox, _ := builder.GetObject("Vbox")
-	vbox.(*gtk.Box).PackStart(u.roster.widget, true, true, 0)
+	obj, _ := builder.GetObject("Vbox")
+	vbox := obj.(*gtk.Box)
+	vbox.PackStart(u.roster.widget, true, true, 0)
 
-	obj, _ := builder.GetObject("notification-area")
+	if *config.SingleWindowFlag {
+		obj, _ := builder.GetObject("Hbox")
+		hbox := obj.(*gtk.Box)
+		u.unified = newUnifiedLayout(u, vbox, hbox)
+	}
+
+	obj, _ = builder.GetObject("notification-area")
 	u.notificationArea = obj.(*gtk.Box)
 
 	u.config.WhenLoaded(func(a *config.ApplicationConfig) {
@@ -287,7 +314,7 @@ func (u *gtkUI) mainWindow() {
 		doInUIThread(u.addFeedbackInfoBar)
 	})
 
-	u.connectShortcutsMainWindow(u.window)
+	u.connectShortcutsMainWindow(&u.window.Window)
 
 	u.window.SetIcon(coyimIcon.getPixbuf())
 	gtk.WindowSetDefaultIcon(coyimIcon.getPixbuf())
@@ -332,8 +359,8 @@ func (u *gtkUI) addFeedbackInfoBar() {
 }
 
 func (u *gtkUI) quit() {
-	// TODO: we should probably disconnect before quitting, if any account is connected
-	gtk.MainQuit()
+	u.accountManager.disconnectAll()
+	u.app.Quit()
 }
 
 func (u *gtkUI) askForPassword(accountName string, connect func(string) error) {
@@ -374,10 +401,8 @@ func (u *gtkUI) feedbackDialog() {
 	dialog := obj.(*gtk.MessageDialog)
 	dialog.SetTransientFor(u.window)
 
-	response := dialog.Run()
-	if gtk.ResponseType(response) == gtk.RESPONSE_CLOSE {
-		dialog.Destroy()
-	}
+	dialog.Run()
+	dialog.Destroy()
 }
 
 func (u *gtkUI) shouldViewAccounts() bool {
@@ -385,51 +410,28 @@ func (u *gtkUI) shouldViewAccounts() bool {
 }
 
 func authors() []string {
-	strikeMessage := "STRIKE Team - coyim@thoughtworks.com"
-
-	b, err := exec.Command("git", "log").Output()
-	if err != nil {
-		return []string{strikeMessage}
+	return []string{
+		"Fan Jiang  -  fan.torchz@gmail.com",
+		"Iván Pazmiño  -  iapazmino@gmail.com",
+		"Ola Bini  -  ola@olabini.se",
+		"Reinaldo de Souza Jr  -  juniorz@gmail.com",
+		"Tania Silva  -  tsilva@thoughtworks.com",
+		"Adam Langley",
+		"Gray Leonard - gl7039a@american.edu",
+		"Bruce Leidl - bruce@subgraph.com",
 	}
-
-	lines := strings.Split(string(b), "\n")
-
-	var a []string
-	r := regexp.MustCompile(`^Author:\s*([^ <]+).*$`)
-	for _, e := range lines {
-		ms := r.FindStringSubmatch(e)
-		if ms == nil {
-			continue
-		}
-		a = append(a, ms[1])
-	}
-	sort.Strings(a)
-	var p string
-	lines = []string{}
-	for _, e := range a {
-		if p == e {
-			continue
-		}
-		lines = append(lines, e)
-		p = e
-	}
-	lines = append(lines, strikeMessage)
-	return lines
 }
 
-func (u gtkUI) aboutDialog() {
+func (u *gtkUI) aboutDialog() {
 	dialog, _ := gtk.AboutDialogNew()
 	dialog.SetName(i18n.Local("Coy IM!"))
-	dialog.SetProgramName("Coyim")
+	dialog.SetProgramName("CoyIM")
 	dialog.SetAuthors(authors())
 	dialog.SetVersion(coyimVersion)
-
-	// dir, _ := path.Split(os.Args[0])
-	// imagefile := path.Join(dir, "../../data/coyim-logo.png")
-	// pixbuf, _ := gdkpixbuf.NewFromFile(imagefile)
-	// dialog.SetLogo(pixbuf)
 	dialog.SetLicense(`GNU GENERAL PUBLIC LICENSE, Version 3`)
 	dialog.SetWrapLicense(true)
+
+	dialog.SetTransientFor(u.window)
 	dialog.Run()
 	dialog.Destroy()
 }
@@ -464,14 +466,14 @@ func (u *gtkUI) addContactWindow() {
 
 func (u *gtkUI) listenToToggleConnectAllAutomatically() {
 	for {
-		<-u.toggleConnectAllAutomaticallyRequest
-		u.config.ConnectAutomatically = !u.config.ConnectAutomatically
+		val := <-u.toggleConnectAllAutomaticallyRequest
+		u.config.ConnectAutomatically = val
 		u.saveConfigOnly()
 	}
 }
 
-func (u *gtkUI) toggleConnectAllAutomatically() {
-	u.toggleConnectAllAutomaticallyRequest <- true
+func (u *gtkUI) setConnectAllAutomatically(val bool) {
+	u.toggleConnectAllAutomaticallyRequest <- val
 }
 
 func (u *gtkUI) setShowAdvancedSettings(val bool) {
@@ -499,6 +501,9 @@ func (u *gtkUI) initMenuBar() {
 
 func (u *gtkUI) rosterUpdated() {
 	doInUIThread(u.roster.redraw)
+	if u.unified != nil {
+		doInUIThread(u.unified.update)
+	}
 }
 
 func (u *gtkUI) editAccount(account *account) {
@@ -510,7 +515,7 @@ func (u *gtkUI) editAccount(account *account) {
 
 func (u *gtkUI) removeAccount(account *account) {
 	u.confirmAccountRemoval(account.session.GetConfig(), func(c *config.Account) {
-		account.session.WantToBeOnline = false
+		account.session.SetWantToBeOnline(false)
 		account.disconnect()
 		u.removeSaveReload(c)
 	})

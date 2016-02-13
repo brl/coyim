@@ -5,6 +5,8 @@ import (
 	"io"
 	"reflect"
 
+	"github.com/twstrike/coyim/xmpp/data"
+
 	. "gopkg.in/check.v1"
 )
 
@@ -14,7 +16,7 @@ var _ = Suite(&IqXmppSuite{})
 
 func (s *IqXmppSuite) Test_SendIQReply_returnsErrorIfOneIsEncounteredWhenWriting(c *C) {
 	mockIn := &mockConnIOReaderWriter{err: errors.New("some error")}
-	conn := Conn{
+	conn := conn{
 		out: mockIn,
 		jid: "somewhat@foo.com/somewhere",
 	}
@@ -25,19 +27,19 @@ func (s *IqXmppSuite) Test_SendIQReply_returnsErrorIfOneIsEncounteredWhenWriting
 
 func (s *IqXmppSuite) Test_SendIQReply_writesAnEmptyReplyIfEmptyIsGiven(c *C) {
 	mockIn := &mockConnIOReaderWriter{}
-	conn := Conn{
+	conn := conn{
 		out: mockIn,
 		jid: "som'ewhat@foo.com/somewhere",
 	}
 
-	err := conn.SendIQReply("f&o", "b\"ar", "b<az", EmptyReply{})
+	err := conn.SendIQReply("f&o", "b\"ar", "b<az", data.EmptyReply{})
 	c.Assert(err, IsNil)
 	c.Assert(string(mockIn.write), Equals, "<iq to='f&amp;o' from='som&apos;ewhat@foo.com/somewhere' type='b&quot;ar' id='b&lt;az'></iq>")
 }
 
 func (s *IqXmppSuite) Test_SendIQReply_returnsErrorIfAnUnXMLableEntryIsGiven(c *C) {
 	mockIn := &mockConnIOReaderWriter{}
-	conn := Conn{
+	conn := conn{
 		out: mockIn,
 		jid: "som'ewhat@foo.com/somewhere",
 	}
@@ -47,7 +49,7 @@ func (s *IqXmppSuite) Test_SendIQReply_returnsErrorIfAnUnXMLableEntryIsGiven(c *
 
 func (s *IqXmppSuite) Test_SendIQ_returnsErrorIfWritingDataFails(c *C) {
 	mockIn := &mockConnIOReaderWriter{err: errors.New("this also fails")}
-	conn := Conn{
+	conn := conn{
 		out: mockIn,
 		jid: "som'ewhat@foo.com/somewhere",
 	}
@@ -57,7 +59,7 @@ func (s *IqXmppSuite) Test_SendIQ_returnsErrorIfWritingDataFails(c *C) {
 
 func (s *IqXmppSuite) Test_Send_returnsErrorIfAnUnXMLableEntryIsGiven(c *C) {
 	mockIn := &mockConnIOReaderWriter{}
-	conn := Conn{
+	conn := conn{
 		out: mockIn,
 		jid: "som'ewhat@foo.com/somewhere",
 	}
@@ -67,7 +69,7 @@ func (s *IqXmppSuite) Test_Send_returnsErrorIfAnUnXMLableEntryIsGiven(c *C) {
 
 func (s *IqXmppSuite) Test_SendIQ_returnsErrorIfWritingDataFailsTheSecondTime(c *C) {
 	mockIn := &mockConnIOReaderWriter{err: errors.New("this also fails again"), errCount: 1}
-	conn := Conn{
+	conn := conn{
 		out: mockIn,
 		jid: "som'ewhat@foo.com/somewhere",
 	}
@@ -78,11 +80,11 @@ func (s *IqXmppSuite) Test_SendIQ_returnsErrorIfWritingDataFailsTheSecondTime(c 
 
 func (s *IqXmppSuite) TestConnSendIQReplyAndTyp(c *C) {
 	mockOut := mockConnIOReaderWriter{}
-	conn := Conn{
+	conn := conn{
 		out: &mockOut,
 		jid: "jid",
 	}
-	conn.inflights = make(map[Cookie]inflight)
+	conn.inflights = make(map[data.Cookie]inflight)
 	reply, cookie, err := conn.SendIQ("example@xmpp.com", "typ", nil)
 	c.Assert(string(mockOut.write), Matches, "<iq to='example@xmpp.com' from='jid' type='typ' id='.*'></iq>")
 	c.Assert(reply, NotNil)
@@ -92,12 +94,12 @@ func (s *IqXmppSuite) TestConnSendIQReplyAndTyp(c *C) {
 
 func (s *IqXmppSuite) TestConnSendIQRaw(c *C) {
 	mockOut := mockConnIOReaderWriter{}
-	conn := Conn{
+	conn := conn{
 		out: &mockOut,
 		jid: "jid",
 	}
 
-	conn.inflights = make(map[Cookie]inflight)
+	conn.inflights = make(map[data.Cookie]inflight)
 	reply, cookie, err := conn.SendIQ("example@xmpp.com", "typ", rawXML("<foo param='bar' />"))
 	c.Assert(string(mockOut.write), Matches, "<iq to='example@xmpp.com' from='jid' type='typ' id='.*'><foo param='bar' /></iq>")
 	c.Assert(reply, NotNil)
@@ -107,7 +109,7 @@ func (s *IqXmppSuite) TestConnSendIQRaw(c *C) {
 
 func (s *IqXmppSuite) TestConnSendIQErr(c *C) {
 	mockOut := mockConnIOReaderWriter{err: io.EOF}
-	conn := Conn{
+	conn := conn{
 		out: &mockOut,
 		jid: "jid",
 	}
@@ -120,12 +122,12 @@ func (s *IqXmppSuite) TestConnSendIQErr(c *C) {
 
 func (s *IqXmppSuite) TestConnSendIQEmptyReply(c *C) {
 	mockOut := mockConnIOReaderWriter{}
-	conn := Conn{
+	conn := conn{
 		out: &mockOut,
 		jid: "jid",
 	}
-	conn.inflights = make(map[Cookie]inflight)
-	reply, cookie, err := conn.SendIQ("example@xmpp.com", "typ", reflect.ValueOf(EmptyReply{}))
+	conn.inflights = make(map[data.Cookie]inflight)
+	reply, cookie, err := conn.SendIQ("example@xmpp.com", "typ", reflect.ValueOf(data.EmptyReply{}))
 	c.Assert(string(mockOut.write), Matches, "<iq to='example@xmpp.com' from='jid' type='typ' id='.*'><Value><flag>.*</flag></Value></iq>")
 	c.Assert(reply, NotNil)
 	c.Assert(cookie, NotNil)
@@ -134,7 +136,7 @@ func (s *IqXmppSuite) TestConnSendIQEmptyReply(c *C) {
 
 func (s *IqXmppSuite) TestConnSendIQReply(c *C) {
 	mockOut := mockConnIOReaderWriter{}
-	conn := Conn{
+	conn := conn{
 		out: &mockOut,
 		jid: "jid",
 	}

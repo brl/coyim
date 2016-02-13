@@ -25,6 +25,7 @@ type Fingerprint struct {
 type Peer struct {
 	UserID       string
 	Fingerprints []*Fingerprint
+	Nickname	 string
 }
 
 // MarshalJSON is used to create a JSON representation of this fingerprint
@@ -213,4 +214,9 @@ func (a *Account) RemovePeer(uid string) {
 		}
 	}
 	a.Peers = newPeers
+}
+
+// RenamePeer sets the nickname for the account
+func (a *Account) RenamePeer(pid, nickname string) {
+	a.EnsurePeer(pid).Nickname = nickname
 }

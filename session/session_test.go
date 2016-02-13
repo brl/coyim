@@ -10,7 +10,9 @@ import (
 
 	"github.com/twstrike/coyim/config"
 	"github.com/twstrike/coyim/roster"
+	"github.com/twstrike/coyim/session/events"
 	"github.com/twstrike/coyim/xmpp"
+	"github.com/twstrike/coyim/xmpp/data"
 
 	. "gopkg.in/check.v1"
 )
@@ -30,12 +32,12 @@ type SessionXmppSuite struct{}
 var _ = Suite(&SessionXmppSuite{})
 
 func (s *SessionXmppSuite) Test_NewSession_returnsANewSession(c *C) {
-	sess := NewSession(&config.ApplicationConfig{}, &config.Account{})
+	sess := Factory(&config.ApplicationConfig{}, &config.Account{}, xmpp.DialerFactory)
 	c.Assert(sess, Not(IsNil))
 }
 
 func (s *SessionXmppSuite) Test_info_publishesInfoEvent(c *C) {
-	sess := &Session{}
+	sess := &session{}
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
@@ -44,8 +46,8 @@ func (s *SessionXmppSuite) Test_info_publishesInfoEvent(c *C) {
 
 	select {
 	case ev := <-observer:
-		t := ev.(LogEvent)
-		c.Assert(t.Level, Equals, Info)
+		t := ev.(events.Log)
+		c.Assert(t.Level, Equals, events.Info)
 		c.Assert(t.Message, Equals, "hello world")
 	case <-time.After(1 * time.Millisecond):
 		c.Errorf("did not receive event")
@@ -53,7 +55,7 @@ func (s *SessionXmppSuite) Test_info_publishesInfoEvent(c *C) {
 }
 
 func (s *SessionXmppSuite) Test_warn_publishesWarnEvent(c *C) {
-	sess := &Session{}
+	sess := &session{}
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
@@ -62,8 +64,8 @@ func (s *SessionXmppSuite) Test_warn_publishesWarnEvent(c *C) {
 
 	select {
 	case ev := <-observer:
-		t := ev.(LogEvent)
-		c.Assert(t.Level, Equals, Warn)
+		t := ev.(events.Log)
+		c.Assert(t.Level, Equals, events.Warn)
 		c.Assert(t.Message, Equals, "hello world2")
 	case <-time.After(1 * time.Millisecond):
 		c.Errorf("did not receive event")
@@ -71,7 +73,7 @@ func (s *SessionXmppSuite) Test_warn_publishesWarnEvent(c *C) {
 }
 
 func (s *SessionXmppSuite) Test_alert_publishedAlertEvent(c *C) {
-	sess := &Session{}
+	sess := &session{}
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
@@ -80,8 +82,8 @@ func (s *SessionXmppSuite) Test_alert_publishedAlertEvent(c *C) {
 
 	select {
 	case ev := <-observer:
-		t := ev.(LogEvent)
-		c.Assert(t.Level, Equals, Alert)
+		t := ev.(events.Log)
+		c.Assert(t.Level, Equals, events.Alert)
 		c.Assert(t.Message, Equals, "hello world3")
 	case <-time.After(1 * time.Millisecond):
 		c.Errorf("did not receive event")
@@ -89,7 +91,7 @@ func (s *SessionXmppSuite) Test_alert_publishedAlertEvent(c *C) {
 }
 
 func (s *SessionXmppSuite) Test_iqReceived_publishesIQReceivedEvent(c *C) {
-	sess := &Session{}
+	sess := &session{}
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
@@ -98,9 +100,9 @@ func (s *SessionXmppSuite) Test_iqReceived_publishesIQReceivedEvent(c *C) {
 
 	select {
 	case ev := <-observer:
-		c.Assert(ev, Equals, PeerEvent{
+		c.Assert(ev, Equals, events.Peer{
 			Session: sess,
-			Type:    IQReceived,
+			Type:    events.IQReceived,
 			From:    "someone@somewhere",
 		})
 	case <-time.After(1 * time.Millisecond):
@@ -116,10 +118,10 @@ func (s *SessionXmppSuite) Test_WatchStanzas_warnsAndExitsOnBadStanza(c *C) {
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
+	sess := &session{
 		connStatus: DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
@@ -128,7 +130,7 @@ func (s *SessionXmppSuite) Test_WatchStanzas_warnsAndExitsOnBadStanza(c *C) {
 
 	select {
 	case ev := <-observer:
-		t := ev.(LogEvent)
+		t := ev.(events.Log)
 		c.Assert(t.Message, Equals, "error reading XMPP message: unexpected XMPP message clientx <message/>")
 	case <-time.After(1 * time.Millisecond):
 		c.Errorf("did not receive event")
@@ -143,10 +145,10 @@ func (s *SessionXmppSuite) Test_WatchStanzas_handlesUnknownMessage(c *C) {
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
+	sess := &session{
 		connStatus: DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
@@ -156,8 +158,8 @@ func (s *SessionXmppSuite) Test_WatchStanzas_handlesUnknownMessage(c *C) {
 	for {
 		select {
 		case ev := <-observer:
-			t := ev.(LogEvent)
-			if t.Level != Info {
+			t := ev.(events.Log)
+			if t.Level != events.Info {
 				continue
 			}
 
@@ -179,18 +181,18 @@ func (s *SessionXmppSuite) Test_WatchStanzas_handlesStreamError_withText(c *C) {
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
+	sess := &session{
 		connStatus: DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
 
 	sess.watchStanzas()
 
-	assertLogContains(c, observer, LogEvent{
-		Level:   Alert,
+	assertLogContains(c, observer, events.Log{
+		Level:   events.Alert,
 		Message: "Exiting in response to fatal error from server: bad horse showed up",
 	})
 }
@@ -203,18 +205,18 @@ func (s *SessionXmppSuite) Test_WatchStanzas_handlesStreamError_withEmbeddedTag(
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
+	sess := &session{
 		connStatus: DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
 	observer := make(chan interface{}, 2)
 	sess.Subscribe(observer)
 
 	sess.watchStanzas()
 
-	assertLogContains(c, observer, LogEvent{
-		Level:   Alert,
+	assertLogContains(c, observer, events.Log{
+		Level:   events.Alert,
 		Message: "Exiting in response to fatal error from server: {urn:ietf:params:xml:ns:xmpp-streams not-well-formed}",
 	})
 }
@@ -227,12 +229,13 @@ func (s *SessionXmppSuite) Test_WatchStanzas_receivesAMessage(c *C) {
 		"some@one.org/foo",
 	)
 
-	sess := NewSession(
+	sess := Factory(
 		&config.ApplicationConfig{},
 		&config.Account{InstanceTag: uint32(42)},
-	)
+		xmpp.DialerFactory,
+	).(*session)
 
-	sess.Conn = conn
+	sess.conn = conn
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
@@ -243,7 +246,7 @@ func (s *SessionXmppSuite) Test_WatchStanzas_receivesAMessage(c *C) {
 		select {
 		case ev := <-observer:
 			switch t := ev.(type) {
-			case MessageEvent:
+			case events.Message:
 				c.Assert(t.Session, Equals, sess)
 				c.Assert(t.Encrypted, Equals, false)
 				c.Assert(t.From, Equals, "bla@hmm.org")
@@ -267,11 +270,10 @@ func (s *SessionXmppSuite) Test_WatchStanzas_failsOnUnrecognizedIQ(c *C) {
 		"some@one.org/foo",
 	)
 
-	var sess *Session
-	sess = &Session{
+	sess := &session{
 		connStatus: DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
@@ -281,12 +283,12 @@ func (s *SessionXmppSuite) Test_WatchStanzas_failsOnUnrecognizedIQ(c *C) {
 	for {
 		select {
 		case ev := <-observer:
-			t := ev.(LogEvent)
-			if t.Level != Info {
+			t := ev.(events.Log)
+			if t.Level != events.Info {
 				continue
 			}
 
-			c.Assert(t.Message, Equals, "unrecognized iq: &xmpp.ClientIQ{XMLName:xml.Name{Space:\"jabber:client\", Local:\"iq\"}, From:\"\", ID:\"\", To:\"\", Type:\"something\", Error:xmpp.ClientError{XMLName:xml.Name{Space:\"\", Local:\"\"}, Code:\"\", Type:\"\", Any:xml.Name{Space:\"\", Local:\"\"}, Text:\"\"}, Bind:xmpp.bindBind{XMLName:xml.Name{Space:\"\", Local:\"\"}, Resource:\"\", Jid:\"\"}, Query:[]uint8{}}")
+			c.Assert(t.Message, Equals, "unrecognized iq: &data.ClientIQ{XMLName:xml.Name{Space:\"jabber:client\", Local:\"iq\"}, From:\"\", ID:\"\", To:\"\", Type:\"something\", Error:data.ClientError{XMLName:xml.Name{Space:\"\", Local:\"\"}, Code:\"\", Type:\"\", Any:xml.Name{Space:\"\", Local:\"\"}, Text:\"\"}, Bind:data.BindBind{XMLName:xml.Name{Space:\"\", Local:\"\"}, Resource:\"\", Jid:\"\"}, Query:[]uint8{}}")
 			return
 
 		case <-time.After(1 * time.Millisecond):
@@ -304,16 +306,16 @@ func (s *SessionXmppSuite) Test_WatchStanzas_getsDiscoInfoIQ(c *C) {
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
-		Config: &config.ApplicationConfig{},
+	sess := &session{
+		config: &config.ApplicationConfig{},
 		accountConfig: &config.Account{
 			Account: "foo.bar@somewhere.org",
 		},
 		connStatus: DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
-	stanzaChan := make(chan xmpp.Stanza, 1)
+	stanzaChan := make(chan data.Stanza, 1)
 	stanza, _ := conn.Next()
 	stanzaChan <- stanza
 
@@ -336,16 +338,16 @@ func (s *SessionXmppSuite) Test_WatchStanzas_getsVersionInfoIQ(c *C) {
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
-		Config: &config.ApplicationConfig{},
+	sess := &session{
+		config: &config.ApplicationConfig{},
 		accountConfig: &config.Account{
 			Account: "foo.bar@somewhere.org",
 		},
 		connStatus: DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
-	stanzaChan := make(chan xmpp.Stanza, 1)
+	stanzaChan := make(chan data.Stanza, 1)
 	stanza, _ := conn.Next()
 	stanzaChan <- stanza
 
@@ -369,14 +371,14 @@ func (s *SessionXmppSuite) Test_WatchStanzas_getsUnknown(c *C) {
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
-		Config: &config.ApplicationConfig{},
+	sess := &session{
+		config: &config.ApplicationConfig{},
 		accountConfig: &config.Account{
 			Account: "foo.bar@somewhere.org",
 		},
 		connStatus: DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
@@ -386,8 +388,8 @@ func (s *SessionXmppSuite) Test_WatchStanzas_getsUnknown(c *C) {
 	for {
 		select {
 		case ev := <-observer:
-			t := ev.(LogEvent)
-			if t.Level != Info {
+			t := ev.(events.Log)
+			if t.Level != events.Info {
 				continue
 			}
 
@@ -409,26 +411,26 @@ func (s *SessionXmppSuite) Test_WatchStanzas_iq_set_roster_withBadFrom(c *C) {
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
-		Config: &config.ApplicationConfig{},
+	sess := &session{
+		config: &config.ApplicationConfig{},
 		accountConfig: &config.Account{
 			Account: "some@one.org",
 		},
 		connStatus: DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
 
-	stanzaChan := make(chan xmpp.Stanza, 1)
+	stanzaChan := make(chan data.Stanza, 1)
 	stanza, _ := conn.Next()
 	stanzaChan <- stanza
 
 	sess.receiveStanza(stanzaChan)
 
-	assertLogContains(c, observer, LogEvent{
-		Level:   Warn,
+	assertLogContains(c, observer, events.Log{
+		Level:   events.Warn,
 		Message: "Ignoring roster IQ from bad address: some2@one.org",
 	})
 
@@ -443,22 +445,22 @@ func (s *SessionXmppSuite) Test_WatchStanzas_iq_set_roster_withFromContainingJid
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
-		Config: &config.ApplicationConfig{},
+	sess := &session{
+		config: &config.ApplicationConfig{},
 		accountConfig: &config.Account{
 			Account: "some@one.org",
 		},
 		connStatus: DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
 
 	sess.watchStanzas()
 
-	assertLogContains(c, observer, LogEvent{
-		Level:   Warn,
+	assertLogContains(c, observer, events.Log{
+		Level:   events.Warn,
 		Message: "Failed to parse roster push IQ",
 	})
 }
@@ -475,20 +477,20 @@ func (s *SessionXmppSuite) Test_WatchStanzas_iq_set_roster_addsANewRosterItem(c 
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
-		Config: &config.ApplicationConfig{},
+	sess := &session{
+		config: &config.ApplicationConfig{},
 		accountConfig: &config.Account{
 			Account: "some@one.org",
 		},
-		R:          roster.New(),
+		r:          roster.New(),
 		connStatus: DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
 	sess.watchStanzas()
 
-	c.Assert(sess.R.ToSlice(), DeepEquals, []*roster.Peer{
-		roster.PeerFrom(xmpp.RosterEntry{Jid: "romeo@example.net", Subscription: "both", Name: "Romeo", Group: []string{"Friends"}}, sess.GetConfig().ID())})
+	c.Assert(sess.r.ToSlice(), DeepEquals, []*roster.Peer{
+		peerFrom(data.RosterEntry{Jid: "romeo@example.net", Subscription: "both", Name: "Romeo", Group: []string{"Friends"}}, sess.GetConfig())})
 }
 
 func (s *SessionXmppSuite) Test_WatchStanzas_iq_set_roster_setsExistingRosterItem(c *C) {
@@ -505,25 +507,25 @@ func (s *SessionXmppSuite) Test_WatchStanzas_iq_set_roster_setsExistingRosterIte
 
 	called := 0
 
-	sess := &Session{
-		Config: &config.ApplicationConfig{},
+	sess := &session{
+		config: &config.ApplicationConfig{},
 		accountConfig: &config.Account{
 			Account: "some@one.org",
 		},
-		R:          roster.New(),
+		r:          roster.New(),
 		connStatus: DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
-	sess.R.AddOrReplace(roster.PeerFrom(xmpp.RosterEntry{Jid: "jill@example.net", Subscription: "both", Name: "Jill", Group: []string{"Foes"}}, sess.GetConfig().ID()))
-	sess.R.AddOrReplace(roster.PeerFrom(xmpp.RosterEntry{Jid: "romeo@example.net", Subscription: "both", Name: "Mo", Group: []string{"Foes"}}, sess.GetConfig().ID()))
+	sess.r.AddOrReplace(peerFrom(data.RosterEntry{Jid: "jill@example.net", Subscription: "both", Name: "Jill", Group: []string{"Foes"}}, sess.GetConfig()))
+	sess.r.AddOrReplace(peerFrom(data.RosterEntry{Jid: "romeo@example.net", Subscription: "both", Name: "Mo", Group: []string{"Foes"}}, sess.GetConfig()))
 
 	sess.watchStanzas()
 
 	c.Assert(called, Equals, 0)
-	c.Assert(sess.R.ToSlice(), DeepEquals, []*roster.Peer{
-		roster.PeerFrom(xmpp.RosterEntry{Jid: "jill@example.net", Subscription: "both", Name: "Jill", Group: []string{"Foes"}}, sess.GetConfig().ID()),
-		roster.PeerFrom(xmpp.RosterEntry{Jid: "romeo@example.net", Subscription: "both", Name: "Romeo", Group: []string{"Friends"}}, sess.GetConfig().ID()),
+	c.Assert(sess.r.ToSlice(), DeepEquals, []*roster.Peer{
+		peerFrom(data.RosterEntry{Jid: "jill@example.net", Subscription: "both", Name: "Jill", Group: []string{"Foes"}}, sess.GetConfig()),
+		peerFrom(data.RosterEntry{Jid: "romeo@example.net", Subscription: "both", Name: "Romeo", Group: []string{"Friends"}}, sess.GetConfig()),
 	})
 }
 
@@ -539,33 +541,33 @@ func (s *SessionXmppSuite) Test_WatchStanzas_iq_set_roster_removesRosterItems(c 
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
-		Config: &config.ApplicationConfig{},
+	sess := &session{
+		config: &config.ApplicationConfig{},
 		accountConfig: &config.Account{
 			Account: "some@one.org",
 		},
-		R:          roster.New(),
+		r:          roster.New(),
 		connStatus: DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
-	sess.R.AddOrReplace(roster.PeerFrom(xmpp.RosterEntry{Jid: "romeo@example.net", Subscription: "both", Name: "Mo", Group: []string{"Foes"}}, ""))
-	sess.R.AddOrReplace(roster.PeerFrom(xmpp.RosterEntry{Jid: "jill@example.net", Subscription: "both", Name: "Jill", Group: []string{"Foes"}}, ""))
-	sess.R.AddOrReplace(roster.PeerFrom(xmpp.RosterEntry{Jid: "romeo@example.net", Subscription: "both", Name: "Mo", Group: []string{"Foes"}}, ""))
+	sess.r.AddOrReplace(peerFrom(data.RosterEntry{Jid: "romeo@example.net", Subscription: "both", Name: "Mo", Group: []string{"Foes"}}, sess.GetConfig()))
+	sess.r.AddOrReplace(peerFrom(data.RosterEntry{Jid: "jill@example.net", Subscription: "both", Name: "Jill", Group: []string{"Foes"}}, sess.GetConfig()))
+	sess.r.AddOrReplace(peerFrom(data.RosterEntry{Jid: "romeo@example.net", Subscription: "both", Name: "Mo", Group: []string{"Foes"}}, sess.GetConfig()))
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
 
 	sess.watchStanzas()
 
-	c.Assert(sess.R.ToSlice(), DeepEquals, []*roster.Peer{
-		roster.PeerFrom(xmpp.RosterEntry{Jid: "jill@example.net", Subscription: "both", Name: "Jill", Group: []string{"Foes"}}, ""),
+	c.Assert(sess.r.ToSlice(), DeepEquals, []*roster.Peer{
+		peerFrom(data.RosterEntry{Jid: "jill@example.net", Subscription: "both", Name: "Jill", Group: []string{"Foes"}}, sess.GetConfig()),
 	})
 
 	select {
 	case ev := <-observer:
 		switch ev.(type) {
-		case PeerEvent:
+		case events.Peer:
 			c.Error("Received peer event")
 			return
 		default:
@@ -584,11 +586,11 @@ func (s *SessionXmppSuite) Test_WatchStanzas_presence_unavailable_forNoneKnownUs
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
-		R:          roster.New(),
+	sess := &session{
+		r:          roster.New(),
 		connStatus: DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
@@ -598,7 +600,7 @@ func (s *SessionXmppSuite) Test_WatchStanzas_presence_unavailable_forNoneKnownUs
 	select {
 	case ev := <-observer:
 		switch ev.(type) {
-		case PresenceEvent:
+		case events.Presence:
 			c.Error("Received presence event")
 			return
 		default:
@@ -617,27 +619,27 @@ func (s *SessionXmppSuite) Test_WatchStanzas_presence_unavailable_forKnownUser(c
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
-		Config:        &config.ApplicationConfig{},
+	sess := &session{
+		config:        &config.ApplicationConfig{},
 		accountConfig: &config.Account{},
-		R:             roster.New(),
+		r:             roster.New(),
 		connStatus:    DISCONNECTED,
 	}
-	sess.Conn = conn
-	sess.R.AddOrReplace(roster.PeerWithState("some2@one.org", "somewhere", "", ""))
+	sess.conn = conn
+	sess.r.AddOrReplace(roster.PeerWithState("some2@one.org", "somewhere", "", ""))
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
 	sess.watchStanzas()
 
-	p, _ := sess.R.Get("some2@one.org")
+	p, _ := sess.r.Get("some2@one.org")
 	c.Assert(p.Online, Equals, false)
 
 	for {
 		select {
 		case ev := <-observer:
 			switch t := ev.(type) {
-			case PresenceEvent:
+			case events.Presence:
 				c.Assert(t.Gone, Equals, true)
 				return
 			default:
@@ -659,17 +661,17 @@ func (s *SessionXmppSuite) Test_WatchStanzas_presence_subscribe(c *C) {
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
-		Config:        &config.ApplicationConfig{},
+	sess := &session{
+		config:        &config.ApplicationConfig{},
 		accountConfig: &config.Account{},
-		R:             roster.New(),
+		r:             roster.New(),
 		connStatus:    DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
 	sess.watchStanzas()
 
-	v, _ := sess.R.GetPendingSubscribe("some2@one.org")
+	v, _ := sess.r.GetPendingSubscribe("some2@one.org")
 	c.Assert(v, Equals, "adf12112")
 }
 
@@ -681,12 +683,12 @@ func (s *SessionXmppSuite) Test_WatchStanzas_presence_unknown(c *C) {
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
-		Config:        &config.ApplicationConfig{},
+	sess := &session{
+		config:        &config.ApplicationConfig{},
 		accountConfig: &config.Account{},
 		connStatus:    DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
@@ -696,11 +698,11 @@ func (s *SessionXmppSuite) Test_WatchStanzas_presence_unknown(c *C) {
 	select {
 	case ev := <-observer:
 		switch t := ev.(type) {
-		case PresenceEvent:
+		case events.Presence:
 			c.Error("Received presence event")
 			return
-		case PeerEvent:
-			if t.Type == SubscriptionRequest {
+		case events.Peer:
+			if t.Type == events.SubscriptionRequest {
 				c.Error("Received subscription request event")
 			}
 			return
@@ -720,27 +722,27 @@ func (s *SessionXmppSuite) Test_WatchStanzas_presence_regularPresenceIsAdded(c *
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
-		Config:        &config.ApplicationConfig{},
+	sess := &session{
+		config:        &config.ApplicationConfig{},
 		accountConfig: &config.Account{},
-		R:             roster.New(),
+		r:             roster.New(),
 		connStatus:    DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
 
 	sess.watchStanzas()
 
-	st, _, _ := sess.R.StateOf("some2@one.org")
+	st, _, _ := sess.r.StateOf("some2@one.org")
 	c.Assert(st, Equals, "dnd")
 
 	for {
 		select {
 		case ev := <-observer:
 			switch t := ev.(type) {
-			case PresenceEvent:
+			case events.Presence:
 				c.Assert(t.Gone, Equals, false)
 			default:
 				//ignore
@@ -761,26 +763,26 @@ func (s *SessionXmppSuite) Test_WatchStanzas_presence_ignoresInitialAway(c *C) {
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
-		Config:        &config.ApplicationConfig{},
+	sess := &session{
+		config:        &config.ApplicationConfig{},
 		accountConfig: &config.Account{},
-		R:             roster.New(),
+		r:             roster.New(),
 		connStatus:    DISCONNECTED,
 	}
-	sess.Conn = conn
+	sess.conn = conn
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
 
 	sess.watchStanzas()
 
-	st, _, _ := sess.R.StateOf("some2@one.org")
+	st, _, _ := sess.r.StateOf("some2@one.org")
 	c.Assert(st, Equals, "")
 
 	select {
 	case ev := <-observer:
 		switch ev.(type) {
-		case PresenceEvent:
+		case events.Presence:
 			c.Error("Received presence event")
 			return
 		default:
@@ -799,27 +801,27 @@ func (s *SessionXmppSuite) Test_WatchStanzas_presence_ignoresSameState(c *C) {
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
-		Config:        &config.ApplicationConfig{},
+	sess := &session{
+		config:        &config.ApplicationConfig{},
 		accountConfig: &config.Account{},
-		R:             roster.New(),
+		r:             roster.New(),
 		connStatus:    DISCONNECTED,
 	}
-	sess.Conn = conn
-	sess.R.AddOrReplace(roster.PeerWithState("some2@one.org", "dnd", "", ""))
+	sess.conn = conn
+	sess.r.AddOrReplace(roster.PeerWithState("some2@one.org", "dnd", "", ""))
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
 
 	sess.watchStanzas()
 
-	st, _, _ := sess.R.StateOf("some2@one.org")
+	st, _, _ := sess.r.StateOf("some2@one.org")
 	c.Assert(st, Equals, "dnd")
 
 	select {
 	case ev := <-observer:
 		switch ev.(type) {
-		case PresenceEvent:
+		case events.Presence:
 			c.Error("Received presence event")
 			return
 		default:
@@ -831,8 +833,8 @@ func (s *SessionXmppSuite) Test_WatchStanzas_presence_ignoresSameState(c *C) {
 }
 
 func (s *SessionXmppSuite) Test_HandleConfirmOrDeny_failsWhenNoPendingSubscribeIsWaiting(c *C) {
-	sess := &Session{
-		R: roster.New(),
+	sess := &session{
+		r: roster.New(),
 	}
 
 	observer := make(chan interface{}, 1)
@@ -842,8 +844,8 @@ func (s *SessionXmppSuite) Test_HandleConfirmOrDeny_failsWhenNoPendingSubscribeI
 
 	select {
 	case ev := <-observer:
-		t := ev.(LogEvent)
-		c.Assert(t.Level, Equals, Warn)
+		t := ev.(events.Log)
+		c.Assert(t.Level, Equals, events.Warn)
 	case <-time.After(1 * time.Millisecond):
 		c.Errorf("did not receive event")
 	}
@@ -859,22 +861,22 @@ func (s *SessionXmppSuite) Test_HandleConfirmOrDeny_succeedsOnNotAllowed(c *C) {
 
 	called := 0
 
-	sess := &Session{
-		R:                   roster.New(),
-		SessionEventHandler: &mockSessionEventHandler{
+	sess := &session{
+		r:                   roster.New(),
+		sessionEventHandler: &mockSessionEventHandler{
 		//warn: func(v string) {
 		//	called++
 		//},
 		},
 	}
-	sess.Conn = conn
-	sess.R.SubscribeRequest("foo@bar.com", "123", "")
+	sess.conn = conn
+	sess.r.SubscribeRequest("foo@bar.com", "123", "")
 
 	sess.HandleConfirmOrDeny("foo@bar.com", false)
 
 	c.Assert(called, Equals, 0)
 	c.Assert(string(mockIn.write), Equals, "<presence id='123' to='foo@bar.com' type='unsubscribed'/>")
-	_, inMap := sess.R.GetPendingSubscribe("foo@bar.com")
+	_, inMap := sess.r.GetPendingSubscribe("foo@bar.com")
 	c.Assert(inMap, Equals, false)
 }
 
@@ -888,22 +890,22 @@ func (s *SessionXmppSuite) Test_HandleConfirmOrDeny_succeedsOnAllowedAndAskBack(
 
 	called := 0
 
-	sess := &Session{
-		R:                   roster.New(),
-		SessionEventHandler: &mockSessionEventHandler{
+	sess := &session{
+		r:                   roster.New(),
+		sessionEventHandler: &mockSessionEventHandler{
 		//warn: func(v string) {
 		//	called++
 		//},
 		},
 	}
-	sess.Conn = conn
-	sess.R.SubscribeRequest("foo@bar.com", "123", "")
+	sess.conn = conn
+	sess.r.SubscribeRequest("foo@bar.com", "123", "")
 
 	sess.HandleConfirmOrDeny("foo@bar.com", true)
 
 	c.Assert(called, Equals, 0)
 	c.Assert(string(mockIn.write), Matches, "<presence id='123' to='foo@bar.com' type='subscribed'/><presence id='[0-9]+' to='foo@bar.com' type='subscribe'/>")
-	_, inMap := sess.R.GetPendingSubscribe("foo@bar.com")
+	_, inMap := sess.r.GetPendingSubscribe("foo@bar.com")
 	c.Assert(inMap, Equals, false)
 }
 
@@ -915,11 +917,11 @@ func (s *SessionXmppSuite) Test_HandleConfirmOrDeny_handlesSendPresenceError(c *
 		"some@one.org/foo",
 	)
 
-	sess := &Session{
-		R: roster.New(),
+	sess := &session{
+		r: roster.New(),
 	}
-	sess.Conn = conn
-	sess.R.SubscribeRequest("foo@bar.com", "123", "")
+	sess.conn = conn
+	sess.r.SubscribeRequest("foo@bar.com", "123", "")
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
@@ -929,8 +931,8 @@ func (s *SessionXmppSuite) Test_HandleConfirmOrDeny_handlesSendPresenceError(c *
 	for {
 		select {
 		case ev := <-observer:
-			t := ev.(LogEvent)
-			if t.Level != Warn {
+			t := ev.(events.Log)
+			if t.Level != events.Warn {
 				continue
 			}
 
@@ -946,15 +948,15 @@ func (s *SessionXmppSuite) Test_HandleConfirmOrDeny_handlesSendPresenceError(c *
 
 func (s *SessionXmppSuite) Test_watchTimeouts_cancelsTimedoutRequestsAndForgetsAboutThem(c *C) {
 	now := time.Now()
-	timeouts := map[xmpp.Cookie]time.Time{
-		xmpp.Cookie(1): now.Add(-1 * time.Second),
-		xmpp.Cookie(2): now.Add(10 * time.Second),
+	timeouts := map[data.Cookie]time.Time{
+		data.Cookie(1): now.Add(-1 * time.Second),
+		data.Cookie(2): now.Add(10 * time.Second),
 	}
 
-	sess := &Session{
+	sess := &session{
 		connStatus: CONNECTED,
 		timeouts:   timeouts,
-		Conn:       &xmpp.Conn{},
+		conn:       xmpp.NewConn(nil, nil, ""),
 	}
 
 	go func() {
@@ -965,6 +967,6 @@ func (s *SessionXmppSuite) Test_watchTimeouts_cancelsTimedoutRequestsAndForgetsA
 	sess.watchTimeout()
 	c.Check(sess.timeouts, HasLen, 1)
 
-	_, ok := sess.timeouts[xmpp.Cookie(2)]
+	_, ok := sess.timeouts[data.Cookie(2)]
 	c.Check(ok, Equals, true)
 }

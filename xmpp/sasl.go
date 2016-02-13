@@ -8,11 +8,14 @@ package xmpp
 
 import (
 	"encoding/hex"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+
+	"github.com/twstrike/coyim/xmpp/data"
+	xe "github.com/twstrike/coyim/xmpp/errors"
+	"github.com/twstrike/coyim/xmpp/interfaces"
 
 	"github.com/twstrike/coyim/sasl"
 	"github.com/twstrike/coyim/sasl/digestmd5"
@@ -21,9 +24,6 @@ import (
 )
 
 var (
-	// ErrAuthenticationFailed indicates a failure to authenticate to the server with the user and password provided.
-	ErrAuthenticationFailed = errors.New("could not authenticate to the XMPP server")
-
 	errUnsupportedSASLMechanism = errors.New("xmpp: server does not support any of the prefered SASL mechanism")
 )
 
@@ -34,24 +34,24 @@ func init() {
 }
 
 // SASL negotiation. RFC 6120, section 6
-func (d *Dialer) negotiateSASL(c *Conn) error {
+func (d *dialer) negotiateSASL(c interfaces.Conn) error {
 	user := d.getJIDLocalpart()
-	password := d.Password
+	password := d.password
 
-	if err := c.authenticate(user, password); err != nil {
-		return ErrAuthenticationFailed
+	if err := c.Authenticate(user, password); err != nil {
+		return xe.ErrAuthenticationFailed
 	}
 
 	// RFC 6120, section 6.3.2. Restart the stream
-	err := c.sendInitialStreamHeader()
+	err := c.SendInitialStreamHeader()
 	if err != nil {
 		return err
 	}
 
-	return c.bindResource()
+	return c.BindResource()
 }
 
-func (c *Conn) authenticate(user, password string) error {
+func (c *conn) Authenticate(user, password string) error {
 	// TODO: Google accounts with 2-step auth MUST use app-specific passwords:
 	// https://security.google.com/settings/security/apppasswords
 	// An alternative would be implementing the Google authentication mechanisms
@@ -62,7 +62,7 @@ func (c *Conn) authenticate(user, password string) error {
 	return c.authenticateWithPreferedMethod(user, password)
 }
 
-func (c *Conn) authenticateWithPreferedMethod(user, password string) error {
+func (c *conn) authenticateWithPreferedMethod(user, password string) error {
 	//TODO: this should be configurable by the client
 	preferedMechanisms := []string{"SCRAM-SHA-1", "DIGEST-MD5", "PLAIN"}
 
@@ -96,13 +96,13 @@ func clientNonce(r io.Reader) (string, error) {
 	return hex.EncodeToString(conceRand), nil
 }
 
-func (c *Conn) authenticatWith(mechanism string, user string, password string) error {
+func (c *conn) authenticatWith(mechanism string, user string, password string) error {
 	clientAuth, err := sasl.NewClient(mechanism)
 	if err != nil {
 		return err
 	}
 
-	clientNonce, err := clientNonce(c.rand())
+	clientNonce, err := clientNonce(c.Rand())
 	if err != nil {
 		return err
 	}
@@ -128,7 +128,7 @@ func (c *Conn) authenticatWith(mechanism string, user string, password string) e
 	return c.challengeLoop(clientAuth)
 }
 
-func (c *Conn) challengeLoop(clientAuth sasl.Session) error {
+func (c *conn) challengeLoop(clientAuth sasl.Session) error {
 	for {
 		t, success, err := c.receiveChallenge()
 		if err != nil {
@@ -151,18 +151,18 @@ func (c *Conn) challengeLoop(clientAuth sasl.Session) error {
 		fmt.Fprintf(c.rawOut, "<response xmlns='%s'>%s</response>\n", NsSASL, t.Encode())
 	}
 
-	return ErrAuthenticationFailed
+	return xe.ErrAuthenticationFailed
 }
 
-func (c *Conn) receiveChallenge() (t sasl.Token, success bool, err error) {
+func (c *conn) receiveChallenge() (t sasl.Token, success bool, err error) {
 	var encodedChallenge []byte
 
 	name, val, _ := next(c)
 	switch v := val.(type) {
-	case *saslFailure:
+	case *data.SaslFailure:
 		err = errors.New("xmpp: authentication failure: " + v.String())
 		return
-	case *saslSuccess:
+	case *data.SaslSuccess:
 		encodedChallenge = v.Content
 		success = true
 	case *string:
@@ -179,10 +179,10 @@ func (c *Conn) receiveChallenge() (t sasl.Token, success bool, err error) {
 }
 
 // Resource binding. RFC 6120, section 7
-func (c *Conn) bindResource() error {
+func (c *conn) BindResource() error {
 	// This is mandatory, so a missing features.Bind is a protocol failure
 	fmt.Fprintf(c.out, "<iq type='set' id='bind_1'><bind xmlns='%s'/></iq>", NsBind)
-	var iq ClientIQ
+	var iq data.ClientIQ
 	if err := c.in.DecodeElement(&iq, nil); err != nil {
 		return errors.New("unmarshal <iq>: " + err.Error())
 	}
@@ -192,14 +192,14 @@ func (c *Conn) bindResource() error {
 }
 
 // See RFC 3921, section 3.
-func (c *Conn) establishSession() error {
+func (c *conn) establishSession() error {
 	if c.features.Session == nil {
 		return nil
 	}
 
 	// The server needs a session to be established.
 	fmt.Fprintf(c.out, "<iq to='%s' type='set' id='sess_1'><session xmlns='%s'/></iq>", c.originDomain, NsSession)
-	var iq ClientIQ
+	var iq data.ClientIQ
 	if err := c.in.DecodeElement(&iq, nil); err != nil {
 		return errors.New("xmpp: unmarshal <iq>: " + err.Error())
 	}
@@ -210,65 +210,3 @@ func (c *Conn) establishSession() error {
 
 	return nil
 }
-
-// RFC 3920  C.4  SASL name space
-//TODO RFC 6120 obsoletes RFC 3920
-type saslMechanisms struct {
-	XMLName   xml.Name `xml:"urn:ietf:params:xml:ns:xmpp-sasl mechanisms"`
-	Mechanism []string `xml:"mechanism"`
-}
-
-type saslAuth struct {
-	XMLName   xml.Name `xml:"urn:ietf:params:xml:ns:xmpp-sasl auth"`
-	Mechanism string   `xml:"mechanism,attr"`
-}
-
-type saslChallenge string
-
-type saslResponse string
-
-type saslAbort struct {
-	XMLName xml.Name `xml:"urn:ietf:params:xml:ns:xmpp-sasl abort"`
-}
-
-type saslSuccess struct {
-	XMLName xml.Name `xml:"urn:ietf:params:xml:ns:xmpp-sasl success"`
-	Content []byte   `xml:",innerxml"`
-}
-
-type saslFailure struct {
-	XMLName          xml.Name `xml:"urn:ietf:params:xml:ns:xmpp-sasl failure"`
-	Text             string   `xml:"text,omitempty"`
-	DefinedCondition Any      `xml:",any"`
-}
-
-// Condition returns a SASL-related error condition
-func (f saslFailure) Condition() SASLErrorCondition {
-	return SASLErrorCondition(f.DefinedCondition.XMLName.Local)
-}
-
-func (f saslFailure) String() string {
-	if f.Text != "" {
-		return fmt.Sprintf("%s: %q", f.Condition(), f.Text)
-	}
-
-	return string(f.Condition())
-}
-
-// SASLErrorCondition represents a defined SASL-related error conditions as defined in RFC 6120, section 6.5
-type SASLErrorCondition string
-
-// SASL error conditions as defined in RFC 6120, section 6.5
-const (
-	SASLAborted              SASLErrorCondition = "aborted"
-	SASLAccountDisabled                         = "account-disabled"
-	SASLCredentialsExpired                      = "credentials-expired"
-	SASLEncryptionRequired                      = "encryption-required"
-	SASLIncorrectEncoding                       = "incorrect-encoding"
-	SASLInvalidAuthzid                          = "invalid-authzid"
-	SASLInvalidMechanism                        = "invalid-mechanism"
-	SASLMalformedRequest                        = "malformed-request"
-	SASLMechanismTooWeak                        = "mechanism-too-weak"
-	SASLNotAuthorized                           = "not-authorized"
-	SASLTemporaryAuthFailure                    = "temporary-auth-failure"
-)

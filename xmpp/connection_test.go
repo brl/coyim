@@ -7,6 +7,9 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/twstrike/coyim/xmpp/data"
+	"github.com/twstrike/coyim/xmpp/errors"
+
 	. "gopkg.in/check.v1"
 )
 
@@ -16,7 +19,7 @@ var _ = Suite(&ConnectionXmppSuite{})
 
 func (s *ConnectionXmppSuite) Test_Next_returnsErrorIfOneIsEncountered(c *C) {
 	mockIn := &mockConnIOReaderWriter{read: []byte("<stream:foo xmlns:stream='http://etherx.jabber.org/streams' to='hello'></stream:foo>")}
-	conn := Conn{
+	conn := conn{
 		in: xml.NewDecoder(mockIn),
 	}
 
@@ -26,7 +29,7 @@ func (s *ConnectionXmppSuite) Test_Next_returnsErrorIfOneIsEncountered(c *C) {
 
 func (s *ConnectionXmppSuite) Test_Next_returnsErrorIfFailingToParseIQID(c *C) {
 	mockIn := &mockConnIOReaderWriter{read: []byte("<client:iq xmlns:client='jabber:client' type='result' id='abczzzz'></client:iq>")}
-	conn := Conn{
+	conn := conn{
 		in: xml.NewDecoder(mockIn),
 	}
 
@@ -36,7 +39,7 @@ func (s *ConnectionXmppSuite) Test_Next_returnsErrorIfFailingToParseIQID(c *C) {
 
 func (s *ConnectionXmppSuite) Test_Next_returnsNothingIfThereIsNoInflightMatching(c *C) {
 	mockIn := &mockConnIOReaderWriter{read: []byte("<client:iq xmlns:client='jabber:client' type='result' id='100000'></client:iq>")}
-	conn := Conn{
+	conn := conn{
 		in: xml.NewDecoder(mockIn),
 	}
 
@@ -46,11 +49,11 @@ func (s *ConnectionXmppSuite) Test_Next_returnsNothingIfThereIsNoInflightMatchin
 
 func (s *ConnectionXmppSuite) Test_Next_returnsNothingIfTheInflightIsToAnotherReceiver(c *C) {
 	mockIn := &mockConnIOReaderWriter{read: []byte("<client:iq xmlns:client='jabber:client' type='result' id='100000' from='bar@somewhere.com'></client:iq>")}
-	conn := Conn{
+	conn := conn{
 		in:        xml.NewDecoder(mockIn),
-		inflights: make(map[Cookie]inflight),
+		inflights: make(map[data.Cookie]inflight),
 	}
-	cookie := Cookie(1048576)
+	cookie := data.Cookie(1048576)
 	conn.inflights[cookie] = inflight{to: "foo@somewhere.com"}
 	_, err := conn.Next()
 	c.Assert(err, Equals, io.EOF)
@@ -58,13 +61,13 @@ func (s *ConnectionXmppSuite) Test_Next_returnsNothingIfTheInflightIsToAnotherRe
 
 func (s *ConnectionXmppSuite) Test_Next_removesInflightIfItMatches(c *C) {
 	mockIn := &mockConnIOReaderWriter{read: []byte("<client:iq xmlns:client='jabber:client' type='result' id='100000' from='foo@somewhere.com'></client:iq>")}
-	inflights := make(map[Cookie]inflight)
-	conn := Conn{
+	inflights := make(map[data.Cookie]inflight)
+	conn := conn{
 		in:        xml.NewDecoder(mockIn),
 		inflights: inflights,
 	}
-	cookie := Cookie(1048576)
-	reply := make(chan Stanza, 1)
+	cookie := data.Cookie(1048576)
+	reply := make(chan data.Stanza, 1)
 	conn.inflights[cookie] =
 		inflight{
 			to:        "foo@somewhere.com",
@@ -83,13 +86,13 @@ func (s *ConnectionXmppSuite) Test_Next_removesInflightIfItMatches(c *C) {
 
 func (s *ConnectionXmppSuite) Test_Next_continuesIfIqFromIsNotSimilarToJid(c *C) {
 	mockIn := &mockConnIOReaderWriter{read: []byte("<client:iq xmlns:client='jabber:client' type='result' id='100000' from='foo@somewhere.com'></client:iq>")}
-	inflights := make(map[Cookie]inflight)
-	conn := Conn{
+	inflights := make(map[data.Cookie]inflight)
+	conn := conn{
 		in:        xml.NewDecoder(mockIn),
 		inflights: inflights,
 		jid:       "foo@myjid.com/blah",
 	}
-	cookie := Cookie(1048576)
+	cookie := data.Cookie(1048576)
 	conn.inflights[cookie] = inflight{}
 	_, err := conn.Next()
 	c.Assert(err, Equals, io.EOF)
@@ -99,13 +102,13 @@ func (s *ConnectionXmppSuite) Test_Next_continuesIfIqFromIsNotSimilarToJid(c *C)
 
 func (s *ConnectionXmppSuite) Test_Next_removesIfThereIsNoFrom(c *C) {
 	mockIn := &mockConnIOReaderWriter{read: []byte("<client:iq xmlns:client='jabber:client' type='result' id='100000'></client:iq>")}
-	inflights := make(map[Cookie]inflight)
-	conn := Conn{
+	inflights := make(map[data.Cookie]inflight)
+	conn := conn{
 		in:        xml.NewDecoder(mockIn),
 		inflights: inflights,
 	}
-	cookie := Cookie(1048576)
-	reply := make(chan Stanza, 1)
+	cookie := data.Cookie(1048576)
+	reply := make(chan data.Stanza, 1)
 	conn.inflights[cookie] =
 		inflight{
 			replyChan: reply,
@@ -123,14 +126,14 @@ func (s *ConnectionXmppSuite) Test_Next_removesIfThereIsNoFrom(c *C) {
 
 func (s *ConnectionXmppSuite) Test_Next_removesIfThereIsTheFromIsSameAsJid(c *C) {
 	mockIn := &mockConnIOReaderWriter{read: []byte("<client:iq xmlns:client='jabber:client' type='result' id='100000' from='some@one.org/foo'></client:iq>")}
-	inflights := make(map[Cookie]inflight)
-	conn := Conn{
+	inflights := make(map[data.Cookie]inflight)
+	conn := conn{
 		in:        xml.NewDecoder(mockIn),
 		inflights: inflights,
 		jid:       "some@one.org/foo",
 	}
-	cookie := Cookie(1048576)
-	reply := make(chan Stanza, 1)
+	cookie := data.Cookie(1048576)
+	reply := make(chan data.Stanza, 1)
 	conn.inflights[cookie] =
 		inflight{
 			replyChan: reply,
@@ -148,14 +151,14 @@ func (s *ConnectionXmppSuite) Test_Next_removesIfThereIsTheFromIsSameAsJid(c *C)
 
 func (s *ConnectionXmppSuite) Test_Next_removesIfThereIsTheFromIsSameAsJidWithoutResource(c *C) {
 	mockIn := &mockConnIOReaderWriter{read: []byte("<client:iq xmlns:client='jabber:client' type='result' id='100000' from='some@one.org'></client:iq>")}
-	inflights := make(map[Cookie]inflight)
-	conn := Conn{
+	inflights := make(map[data.Cookie]inflight)
+	conn := conn{
 		in:        xml.NewDecoder(mockIn),
 		inflights: inflights,
 		jid:       "some@one.org/foo",
 	}
-	cookie := Cookie(1048576)
-	reply := make(chan Stanza, 1)
+	cookie := data.Cookie(1048576)
+	reply := make(chan data.Stanza, 1)
 	conn.inflights[cookie] =
 		inflight{
 			replyChan: reply,
@@ -173,14 +176,14 @@ func (s *ConnectionXmppSuite) Test_Next_removesIfThereIsTheFromIsSameAsJidWithou
 
 func (s *ConnectionXmppSuite) Test_Next_removesIfThereIsTheFromIsSameAsJidDomain(c *C) {
 	mockIn := &mockConnIOReaderWriter{read: []byte("<client:iq xmlns:client='jabber:client' type='result' id='100000' from='one.org'></client:iq>")}
-	inflights := make(map[Cookie]inflight)
-	conn := Conn{
+	inflights := make(map[data.Cookie]inflight)
+	conn := conn{
 		in:        xml.NewDecoder(mockIn),
 		inflights: inflights,
 		jid:       "some@one.org/foo",
 	}
-	cookie := Cookie(1048576)
-	reply := make(chan Stanza, 1)
+	cookie := data.Cookie(1048576)
+	reply := make(chan data.Stanza, 1)
 	conn.inflights[cookie] =
 		inflight{
 			replyChan: reply,
@@ -198,28 +201,28 @@ func (s *ConnectionXmppSuite) Test_Next_removesIfThereIsTheFromIsSameAsJidDomain
 
 func (s *ConnectionXmppSuite) Test_Next_returnsNonIQMessage(c *C) {
 	mockIn := &mockConnIOReaderWriter{read: []byte("<client:message xmlns:client='jabber:client' to='fo@bar.com' from='bar@foo.com' type='chat'><client:body>something</client:body></client:message>")}
-	conn := Conn{
+	conn := conn{
 		in:  xml.NewDecoder(mockIn),
 		jid: "some@one.org/foo",
 	}
 	v, err := conn.Next()
 	c.Assert(err, IsNil)
-	c.Assert(v.Value.(*ClientMessage).From, Equals, "bar@foo.com")
-	c.Assert(v.Value.(*ClientMessage).To, Equals, "fo@bar.com")
-	c.Assert(v.Value.(*ClientMessage).Type, Equals, "chat")
-	c.Assert(v.Value.(*ClientMessage).Body, Equals, "something")
+	c.Assert(v.Value.(*data.ClientMessage).From, Equals, "bar@foo.com")
+	c.Assert(v.Value.(*data.ClientMessage).To, Equals, "fo@bar.com")
+	c.Assert(v.Value.(*data.ClientMessage).Type, Equals, "chat")
+	c.Assert(v.Value.(*data.ClientMessage).Body, Equals, "something")
 }
 
 func (s *ConnectionXmppSuite) Test_makeInOut_returnsANewDecoderAndOriginalWriterWhenNoConfigIsGiven(c *C) {
 	mockBoth := &mockConnIOReaderWriter{}
-	_, rout := makeInOut(mockBoth, Config{})
+	_, rout := makeInOut(mockBoth, data.Config{})
 	c.Assert(rout, Equals, mockBoth)
 }
 
 func (s *ConnectionXmppSuite) Test_makeInOut_returnsANewDecoderAndWrappedWriterWhenConfigIsGiven(c *C) {
 	mockBoth := &mockConnIOReaderWriter{}
 	mockInLog := &mockConnIOReaderWriter{}
-	config := Config{InLog: mockInLog, OutLog: mockInLog}
+	config := data.Config{InLog: mockInLog, OutLog: mockInLog}
 	_, rout := makeInOut(mockBoth, config)
 	c.Assert(rout, Not(Equals), mockBoth)
 }
@@ -228,9 +231,9 @@ func (s *ConnectionXmppSuite) Test_Dial_returnsErrorFromGetFeatures(c *C) {
 	rw := &mockConnIOReaderWriter{}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
+		password: "pass",
 	}
 	_, err := d.setupStream(conn)
 
@@ -241,14 +244,14 @@ func (s *ConnectionXmppSuite) Test_Dial_returnsErrorFromAuthenticateIfSkipTLS(c 
 	rw := &mockConnIOReaderWriter{read: []byte("<?xml version='1.0'?><str:stream xmlns:str='http://etherx.jabber.org/streams' version='1.0'><str:features></str:features>")}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
-		Config:   Config{SkipTLS: true},
+		password: "pass",
+		config:   data.Config{SkipTLS: true},
 	}
 	_, err := d.setupStream(conn)
 
-	c.Assert(err, Equals, ErrAuthenticationFailed)
+	c.Assert(err, Equals, errors.ErrAuthenticationFailed)
 }
 
 func (s *ConnectionXmppSuite) Test_Dial_returnsErrorFromSecondFeatureCheck(c *C) {
@@ -263,10 +266,10 @@ func (s *ConnectionXmppSuite) Test_Dial_returnsErrorFromSecondFeatureCheck(c *C)
 			"<sasl:success xmlns:sasl='urn:ietf:params:xml:ns:xmpp-sasl'></sasl:success>")}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
-		Config:   Config{SkipTLS: true},
+		password: "pass",
+		config:   data.Config{SkipTLS: true},
 	}
 	_, err := d.setupStream(conn)
 
@@ -297,10 +300,10 @@ func (s *ConnectionXmppSuite) Test_Dial_returnsErrorFromIQReturn(c *C) {
 	)}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
-		Config:   Config{SkipTLS: true},
+		password: "pass",
+		config:   data.Config{SkipTLS: true},
 	}
 	_, err := d.setupStream(conn)
 
@@ -333,10 +336,10 @@ func (s *ConnectionXmppSuite) Test_Dial_returnsWorkingConnIfEverythingPasses(c *
 	)}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
-		Config:   Config{SkipTLS: true},
+		password: "pass",
+		config:   data.Config{SkipTLS: true},
 	}
 	_, err := d.setupStream(conn)
 
@@ -364,9 +367,9 @@ func (s *ConnectionXmppSuite) Test_Dial_failsIfTheServerDoesntSupportTLS(c *C) {
 	)}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
+		password: "pass",
 	}
 	_, err := d.setupStream(conn)
 
@@ -387,9 +390,9 @@ func (s *ConnectionXmppSuite) Test_Dial_failsIfReceivingEOFAfterStartingTLS(c *C
 	)}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
+		password: "pass",
 	}
 	_, err := d.setupStream(conn)
 
@@ -411,9 +414,9 @@ func (s *ConnectionXmppSuite) Test_Dial_failsIfReceivingTheWrongNamespaceAfterSt
 	)}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
+		password: "pass",
 	}
 	_, err := d.setupStream(conn)
 
@@ -435,9 +438,9 @@ func (s *ConnectionXmppSuite) Test_Dial_failsIfReceivingTheWrongTagName(c *C) {
 	)}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
+		password: "pass",
 	}
 	_, err := d.setupStream(conn)
 
@@ -461,10 +464,10 @@ func (s *ConnectionXmppSuite) Test_Dial_failsWhenStartingAHandshake(c *C) {
 	var tlsC tls.Config
 	tlsC.Rand = fixedRand([]string{"000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"})
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
-		Config: Config{
+		password: "pass",
+		config: data.Config{
 			TLSConfig: &tlsC,
 		},
 	}
@@ -509,10 +512,10 @@ func (s *ConnectionXmppSuite) Test_Dial_setsServerNameOnTLSContext(c *C) {
 	var tlsC tls.Config
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
-		Config: Config{
+		password: "pass",
+		config: data.Config{
 			TLSConfig: &tlsC,
 		},
 	}
@@ -534,10 +537,10 @@ func (s *ConnectionXmppSuite) Test_Dial_failsIfDecodingFallbackFails(c *C) {
 	)}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
-		Config: Config{
+		password: "pass",
+		config: data.Config{
 			SkipTLS: true,
 			CreateCallback: func(title, instructions string, fields []interface{}) error {
 				return nil
@@ -568,10 +571,10 @@ func (s *ConnectionXmppSuite) Test_Dial_failsIfAccountCreationFails(c *C) {
 	)}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
-		Config: Config{
+		password: "pass",
+		config: data.Config{
 			SkipTLS: true,
 			CreateCallback: func(title, instructions string, fields []interface{}) error {
 				return nil
@@ -602,10 +605,10 @@ func (s *ConnectionXmppSuite) Test_Dial_failsIfTheIQQueryHasNoContent(c *C) {
 	)}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
-		Config: Config{
+		password: "pass",
+		config: data.Config{
 			SkipTLS: true,
 			CreateCallback: func(title, instructions string, fields []interface{}) error {
 				return nil
@@ -638,10 +641,10 @@ func (s *ConnectionXmppSuite) Test_Dial_ifRegisterQueryDoesntContainDataFailsAtN
 	)}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
-		Config: Config{
+		password: "pass",
+		config: data.Config{
 			SkipTLS: true,
 			CreateCallback: func(title, instructions string, fields []interface{}) error {
 				return nil
@@ -675,10 +678,10 @@ func (s *ConnectionXmppSuite) Test_Dial_afterRegisterFailsIfReceivesAnErrorEleme
 	)}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
-		Config: Config{
+		password: "pass",
+		config: data.Config{
 			SkipTLS: true,
 			CreateCallback: func(title, instructions string, fields []interface{}) error {
 				return nil
@@ -712,10 +715,10 @@ func (s *ConnectionXmppSuite) Test_Dial_sendsBackUsernameAndPassword(c *C) {
 	)}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
-		Config: Config{
+		password: "pass",
+		config: data.Config{
 			SkipTLS: true,
 			CreateCallback: func(title, instructions string, fields []interface{}) error {
 				return nil
@@ -761,10 +764,10 @@ func (s *ConnectionXmppSuite) Test_Dial_runsForm(c *C) {
 	)}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
-		Config: Config{
+		password: "pass",
+		config: data.Config{
 			SkipTLS: true,
 			CreateCallback: func(title, instructions string, fields []interface{}) error {
 				return nil
@@ -797,10 +800,10 @@ func (s *ConnectionXmppSuite) Test_Dial_setsLog(c *C) {
 	)}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
-		Config: Config{
+		password: "pass",
+		config: data.Config{
 			SkipTLS: true,
 			Log:     l,
 			CreateCallback: func(title, instructions string, fields []interface{}) error {
@@ -838,10 +841,10 @@ func (s *ConnectionXmppSuite) Test_Dial_failsWhenTryingToEstablishSession(c *C) 
 	)}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
-		Config: Config{
+		password: "pass",
+		config: data.Config{
 			SkipTLS: true,
 		},
 	}
@@ -880,10 +883,10 @@ func (s *ConnectionXmppSuite) Test_Dial_failsWhenTryingToEstablishSessionAndGets
 	)}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
-		Config: Config{
+		password: "pass",
+		config: data.Config{
 			SkipTLS: true,
 		},
 	}
@@ -921,10 +924,10 @@ func (s *ConnectionXmppSuite) Test_Dial_succeedsEstablishingASession(c *C) {
 	)}
 	conn := &fullMockedConn{rw: rw}
 
-	d := &Dialer{
+	d := &dialer{
 		JID:      "user@domain",
-		Password: "pass",
-		Config: Config{
+		password: "pass",
+		config: data.Config{
 			SkipTLS: true,
 		},
 	}
@@ -1021,12 +1024,12 @@ func (s *ConnectionXmppSuite) Test_Dial_worksIfTheHandshakeSucceeds(c *C) {
 		"000102030405060708090A0B0C0D0E0F",
 	})
 
-	d := &Dialer{
+	d := &dialer{
 		JID:           "user@www.olabini.se",
-		Password:      "pass",
-		ServerAddress: "www.olabini.se:443",
+		password:      "pass",
+		serverAddress: "www.olabini.se:443",
 
-		Config: Config{
+		config: data.Config{
 			TLSConfig: &tlsC,
 		},
 	}
@@ -1071,12 +1074,12 @@ func (s *ConnectionXmppSuite) Test_Dial_worksIfTheHandshakeSucceedsButFailsOnInv
 		"000102030405060708090A0B0C0D0E0F",
 	})
 
-	d := &Dialer{
+	d := &dialer{
 		JID:           "user@www.olabini.se",
-		Password:      "pass",
-		ServerAddress: "www.olabini.se:443",
+		password:      "pass",
+		serverAddress: "www.olabini.se:443",
 
-		Config: Config{
+		config: data.Config{
 			TLSConfig:               &tlsC,
 			ServerCertificateSHA256: []byte("aaaaa"),
 		},
@@ -1097,12 +1100,12 @@ func (s *ConnectionXmppSuite) Test_Dial_worksIfTheHandshakeSucceedsButSucceedsOn
 		"000102030405060708090A0B0C0D0E0F",
 	})
 
-	d := &Dialer{
+	d := &dialer{
 		JID:           "user@www.olabini.se",
-		Password:      "pass",
-		ServerAddress: "www.olabini.se:443",
+		password:      "pass",
+		serverAddress: "www.olabini.se:443",
 
-		Config: Config{
+		config: data.Config{
 			TLSConfig:               &tlsC,
 			ServerCertificateSHA256: bytesFromHex("2300818fdc977ce5eb357694d421e47869a952990bc3230ef6aca2bb6ee6f00b"),
 		},
@@ -1115,30 +1118,30 @@ func (s *ConnectionXmppSuite) Test_Dial_worksIfTheHandshakeSucceedsButSucceedsOn
 func (s *ConnectionXmppSuite) Test_readMessages_passesStanzaToChannel(c *C) {
 	mockIn := &mockConnIOReaderWriter{read: []byte("<client:message xmlns:client='jabber:client' to='fo@bar.com' from='bar@foo.com' type='chat'><client:body>something</client:body></client:message>")}
 
-	conn := &Conn{
+	conn := &conn{
 		in:     xml.NewDecoder(mockIn),
 		closed: true, //This avoids trying to close the connection after the EOF
 	}
-	stanzaChan := make(chan Stanza)
+	stanzaChan := make(chan data.Stanza)
 	go conn.ReadStanzas(stanzaChan)
 
 	select {
 	case rawStanza, ok := <-stanzaChan:
 		c.Assert(ok, Equals, true)
 		c.Assert(rawStanza.Name.Local, Equals, "message")
-		c.Assert(rawStanza.Value.(*ClientMessage).Body, Equals, "something")
+		c.Assert(rawStanza.Value.(*data.ClientMessage).Body, Equals, "something")
 	}
 }
 
 func (s *ConnectionXmppSuite) Test_readMessages_alertsOnError(c *C) {
 	mockIn := &mockConnIOReaderWriter{read: []byte("<clientx:message xmlns:client='jabber:client' to='fo@bar.com' from='bar@foo.com' type='chat'><client:body>something</client:body></client:message>")}
 
-	conn := &Conn{
+	conn := &conn{
 		in:     xml.NewDecoder(mockIn),
 		closed: true, //This avoids trying to close the connection after the EOF
 	}
 
-	stanzaChan := make(chan Stanza, 1)
+	stanzaChan := make(chan data.Stanza, 1)
 	err := conn.ReadStanzas(stanzaChan)
 
 	select {
