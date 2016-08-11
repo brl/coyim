@@ -3,7 +3,7 @@ package client
 import (
 	"sync"
 
-	"github.com/twstrike/otr3"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/otr3"
 )
 
 // ConversationBuilder represents an entity capable of building Conversations
@@ -16,19 +16,19 @@ type ConversationBuilder interface {
 //TODO: this assumes there is no more than one simultaneous conversations with a given peer
 type Sender interface {
 	// Send sends a message to a peer
-	Send(peer, msg string) error
+	Send(peer, resource, msg string) error
 }
 
 // ConversationManager represents an entity capable of managing Conversations
 type ConversationManager interface {
 	// GetConversationWith returns the conversation for the given peer, and
 	// whether the Conversation exists
-	GetConversationWith(peer string) (Conversation, bool)
+	GetConversationWith(peer, resource string) (Conversation, bool)
 
 	// GetConversationWith returns the conversation for the given peer, and
 	// creates the conversation if none exists. Additionally, returns whether the
 	// conversation was created.
-	EnsureConversationWith(peer string) (Conversation, bool)
+	EnsureConversationWith(peer, resource string) (Conversation, bool)
 
 	// Conversations return all conversations currently managed
 	Conversations() map[string]Conversation
@@ -55,10 +55,16 @@ func NewConversationManager(builder ConversationBuilder, sender Sender) Conversa
 	}
 }
 
-func (m *conversationManager) GetConversationWith(peer string) (Conversation, bool) {
+func (m *conversationManager) GetConversationWith(peer, resource string) (Conversation, bool) {
 	m.RLock()
 	defer m.RUnlock()
 	c, ok := m.conversations[peer]
+	if ok && c.resource != "" && resource != "" && c.resource != resource {
+		return c, false
+	}
+	if ok {
+		c.resource = resource
+	}
 	return c, ok
 }
 
@@ -74,16 +80,23 @@ func (m *conversationManager) Conversations() map[string]Conversation {
 	return ret
 }
 
-func (m *conversationManager) EnsureConversationWith(peer string) (Conversation, bool) {
+func (m *conversationManager) EnsureConversationWith(peer, resource string) (Conversation, bool) {
 	m.Lock()
 	defer m.Unlock()
 
-	if c, ok := m.conversations[peer]; ok {
-		return c, false
+	c, ok := m.conversations[peer]
+	if ok && (c.resource == "" || resource == "" || c.resource == resource) {
+		c.resource = resource
+		return c, true
 	}
 
-	c := &conversation{
+	if ok {
+		m.terminateConversationWith(peer, c.resource)
+	}
+
+	c = &conversation{
 		to:           peer,
+		resource:     resource,
 		Conversation: m.builder.NewConversation(peer),
 	}
 	m.conversations[peer] = c
@@ -96,13 +109,13 @@ func (m *conversationManager) TerminateAll() {
 	defer m.RUnlock()
 
 	for peer := range m.conversations {
-		m.terminateConversationWith(peer)
+		m.terminateConversationWith(peer, "")
 	}
 }
 
-func (m *conversationManager) terminateConversationWith(peer string) error {
+func (m *conversationManager) terminateConversationWith(peer, resource string) error {
 	if c, ok := m.conversations[peer]; ok {
-		return c.EndEncryptedChat(m.sender)
+		return c.EndEncryptedChat(m.sender, resource)
 	}
 
 	return nil

@@ -2,6 +2,7 @@ package roster
 
 import (
 	"sort"
+	"sync"
 
 	"github.com/twstrike/coyim/xmpp/utils"
 )
@@ -13,7 +14,8 @@ import (
 // It also contains information about pending subscribes
 // One invariant is that the list will only ever contain one Peer for each bare jid.
 type List struct {
-	peers map[string]*Peer
+	peers     map[string]*Peer
+	peersLock sync.RWMutex
 }
 
 // New returns a new List
@@ -25,12 +27,18 @@ func New() *List {
 
 // Get returns the peer if it's known and false otherwise
 func (l *List) Get(jid string) (*Peer, bool) {
+	l.peersLock.RLock()
+	defer l.peersLock.RUnlock()
+
 	v, ok := l.peers[utils.RemoveResourceFromJid(jid)]
 	return v, ok
 }
 
 // Clear removes all current entries in the list
 func (l *List) Clear() {
+	l.peersLock.Lock()
+	defer l.peersLock.Unlock()
+
 	l.peers = make(map[string]*Peer)
 }
 
@@ -38,6 +46,9 @@ func (l *List) Clear() {
 // It returns true if it could remove the entry and false otherwise. It also returns the removed entry.
 func (l *List) Remove(jid string) (*Peer, bool) {
 	j := utils.RemoveResourceFromJid(jid)
+
+	l.peersLock.Lock()
+	defer l.peersLock.Unlock()
 
 	if v, ok := l.peers[j]; ok {
 		delete(l.peers, j)
@@ -50,6 +61,9 @@ func (l *List) Remove(jid string) (*Peer, bool) {
 // AddOrMerge will add a new entry or merge with an existing entry the information from the given Peer
 // It returns true if it added the entry and false otherwise
 func (l *List) AddOrMerge(p *Peer) bool {
+	l.peersLock.Lock()
+	defer l.peersLock.Unlock()
+
 	if v, existed := l.peers[p.Jid]; existed {
 		l.peers[p.Jid] = v.MergeWith(p)
 		return false
@@ -65,6 +79,8 @@ func (l *List) AddOrMerge(p *Peer) bool {
 func (l *List) AddOrReplace(p *Peer) bool {
 	_, existed := l.Get(p.Jid)
 
+	l.peersLock.Lock()
+	defer l.peersLock.Unlock()
 	l.peers[p.Jid] = p
 
 	return !existed
@@ -74,7 +90,15 @@ func (l *List) AddOrReplace(p *Peer) bool {
 // Returns true if they existed, otherwise false
 func (l *List) PeerBecameUnavailable(jid string) bool {
 	if p, exist := l.Get(jid); exist {
-		p.Online = false
+		resource := utils.ResourceFromJid(jid)
+		if resource != "" {
+			p.RemoveResource(resource)
+			p.Online = p.HasResources()
+		} else {
+			p.ClearResources()
+			p.Online = false
+		}
+
 		return true
 	}
 
@@ -84,9 +108,12 @@ func (l *List) PeerBecameUnavailable(jid string) bool {
 // PeerPresenceUpdate updates the status for the peer
 // It returns true if it actually updated the status of the user
 func (l *List) PeerPresenceUpdate(jid, status, statusMsg, belongsTo string) bool {
+	resource := utils.ResourceFromJid(jid)
+
 	if p, ok := l.Get(jid); ok {
 		oldOnline := p.Online
 		p.Online = true
+		p.AddResource(resource)
 		if p.Status != status || p.StatusMsg != statusMsg {
 			p.Status = status
 			p.StatusMsg = statusMsg
@@ -96,7 +123,7 @@ func (l *List) PeerPresenceUpdate(jid, status, statusMsg, belongsTo string) bool
 	}
 
 	if status != "away" && status != "xa" {
-		l.AddOrMerge(PeerWithState(jid, status, statusMsg, belongsTo))
+		l.AddOrMerge(PeerWithState(jid, status, statusMsg, belongsTo, resource))
 		return true
 	}
 
@@ -197,6 +224,9 @@ func (l *List) intoSlice(res []*Peer) []*Peer {
 
 // ToSlice returns a slice of all the peers in this roster list
 func (l *List) ToSlice() []*Peer {
+	l.peersLock.RLock()
+	defer l.peersLock.RUnlock()
+
 	res := l.intoSlice(make([]*Peer, 0, len(l.peers)))
 
 	sort.Sort(byJidAlphabetic(res))
@@ -215,7 +245,11 @@ func (l *List) Iter(cb func(int, *Peer)) {
 func IterAll(cb func(int, *Peer), ls ...*List) {
 	res := make([]*Peer, 0, 20)
 	for _, l := range ls {
-		res = l.intoSlice(res)
+		func() {
+			l.peersLock.RLock()
+			defer l.peersLock.RUnlock()
+			res = l.intoSlice(res)
+		}()
 	}
 
 	sort.Sort(byJidAlphabetic(res))
@@ -223,4 +257,21 @@ func IterAll(cb func(int, *Peer), ls ...*List) {
 	for ix, pr := range res {
 		cb(ix, pr)
 	}
+}
+
+// GetGroupNames return all group names for this peer list.
+func (l *List) GetGroupNames() map[string]bool {
+	l.peersLock.RLock()
+	defer l.peersLock.RUnlock()
+
+	names := map[string]bool{}
+
+	//TODO: Should not group separator be part of a Peer List?
+	for _, peer := range l.peers {
+		for group := range peer.Groups {
+			names[group] = true
+		}
+	}
+
+	return names
 }

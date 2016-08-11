@@ -33,9 +33,10 @@ type conn struct {
 	rawOut       io.WriteCloser // doesn't log. Used for <auth>
 	keepaliveOut io.Writer
 
-	jid          string
-	originDomain string
-	features     data.StreamFeatures
+	jid           string
+	originDomain  string
+	features      data.StreamFeatures
+	serverAddress string
 
 	rand          io.Reader
 	lock          sync.Mutex
@@ -84,6 +85,18 @@ func (c *conn) Config() *data.Config {
 
 func (c *conn) In() *xml.Decoder {
 	return c.in
+}
+
+func (c *conn) RawOut() io.WriteCloser {
+	return c.rawOut
+}
+
+func (c *conn) SetServerAddress(s1 string) {
+	c.serverAddress = s1
+}
+
+func (c *conn) ServerAddress() string {
+	return c.serverAddress
 }
 
 func (c *conn) Out() io.Writer {
@@ -245,7 +258,8 @@ func (c *conn) Send(to, msg string) error {
 		// http://xmpp.org/extensions/xep-0136.html#otr-nego
 		archive = "<nos:x xmlns:nos='google:nosave' value='enabled'/><arc:record xmlns:arc='http://jabber.org/protocol/archive' otr='require'/>"
 	}
-	_, err := fmt.Fprintf(c.out, "<message to='%s' from='%s' type='chat'><body>%s</body>%s</message>", xmlEscape(to), xmlEscape(c.jid), xmlEscape(msg), archive)
+	nocopy := "<no-copy xmlns='urn:xmpp:hints'/><no-permanent-store xmlns='urn:xmpp:hints'/><private xmlns='urn:xmpp:carbons:2'/>"
+	_, err := fmt.Fprintf(c.out, "<message to='%s' from='%s' type='chat'><body>%s</body>%s%s</message>", xmlEscape(to), xmlEscape(c.jid), xmlEscape(msg), archive, nocopy)
 	return err
 }
 

@@ -1,20 +1,17 @@
 package client
 
-import (
-	"github.com/twstrike/coyim/i18n"
-	"github.com/twstrike/otr3"
-)
+import "github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/otr3"
 
 // Conversation represents a conversation with encryption capabilities
 type Conversation interface {
-	Send(Sender, []byte) error
-	Receive(Sender, []byte) ([]byte, error)
+	Send(Sender, string, []byte) error
+	Receive(Sender, string, []byte) ([]byte, error)
 
-	StartEncryptedChat(Sender) error
-	EndEncryptedChat(Sender) error
+	StartEncryptedChat(Sender, string) error
+	EndEncryptedChat(Sender, string) error
 
-	ProvideAuthenticationSecret(Sender, []byte) error
-	StartAuthenticate(Sender, string, []byte) error
+	ProvideAuthenticationSecret(Sender, string, []byte) error
+	StartAuthenticate(Sender, string, string, []byte) error
 
 	GetSSID() [8]byte
 	IsEncrypted() bool
@@ -25,19 +22,18 @@ type Conversation interface {
 }
 
 type conversation struct {
-	to string
+	to       string
+	resource string
 	*otr3.Conversation
 }
 
-func (c *conversation) StartEncryptedChat(s Sender) error {
-	//TODO: review whether it should create a conversation
-	//conversation, _ := m.EnsureConversationWith(peer)
-	return s.Send(c.to, string(c.QueryMessage())+" "+i18n.Local("Your peer has requested a private conversation with you, but your client doesn't seem to support the OTR protocol."))
+func (c *conversation) StartEncryptedChat(s Sender, resource string) error {
+	return s.Send(c.to, resource, string(c.QueryMessage()))
 }
 
-func (c *conversation) sendAll(s Sender, toSend []otr3.ValidMessage) error {
+func (c *conversation) sendAll(s Sender, resource string, toSend []otr3.ValidMessage) error {
 	for _, msg := range toSend {
-		err := s.Send(c.to, string(msg))
+		err := s.Send(c.to, resource, string(msg))
 		if err != nil {
 			return err
 		}
@@ -46,27 +42,27 @@ func (c *conversation) sendAll(s Sender, toSend []otr3.ValidMessage) error {
 	return nil
 }
 
-func (c *conversation) EndEncryptedChat(s Sender) error {
+func (c *conversation) EndEncryptedChat(s Sender, resource string) error {
 	toSend, err := c.End()
 	if err != nil {
 		return err
 	}
 
-	return c.sendAll(s, toSend)
+	return c.sendAll(s, resource, toSend)
 }
 
-func (c *conversation) Send(s Sender, m []byte) error {
+func (c *conversation) Send(s Sender, resource string, m []byte) error {
 	toSend, err := c.Conversation.Send(m)
 	if err != nil {
 		return err
 	}
 
-	return c.sendAll(s, toSend)
+	return c.sendAll(s, resource, toSend)
 }
 
-func (c *conversation) Receive(s Sender, m []byte) ([]byte, error) {
+func (c *conversation) Receive(s Sender, resource string, m []byte) ([]byte, error) {
 	plain, toSend, err := c.Conversation.Receive(m)
-	err2 := c.sendAll(s, toSend)
+	err2 := c.sendAll(s, resource, toSend)
 
 	if err != nil {
 		return plain, err
@@ -75,22 +71,22 @@ func (c *conversation) Receive(s Sender, m []byte) ([]byte, error) {
 	return plain, err2
 }
 
-func (c *conversation) ProvideAuthenticationSecret(s Sender, m []byte) error {
+func (c *conversation) ProvideAuthenticationSecret(s Sender, resource string, m []byte) error {
 	toSend, err := c.Conversation.ProvideAuthenticationSecret(m)
 	if err != nil {
 		return err
 	}
 
-	return c.sendAll(s, toSend)
+	return c.sendAll(s, resource, toSend)
 }
 
-func (c *conversation) StartAuthenticate(s Sender, q string, m []byte) error {
+func (c *conversation) StartAuthenticate(s Sender, resource string, q string, m []byte) error {
 	toSend, err := c.Conversation.StartAuthenticate(q, m)
 	if err != nil {
 		return err
 	}
 
-	return c.sendAll(s, toSend)
+	return c.sendAll(s, resource, toSend)
 }
 
 func (c *conversation) OurFingerprint() []byte {

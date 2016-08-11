@@ -8,24 +8,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/gotk3adapter/glib_mock"
 	"github.com/twstrike/coyim/config"
+	"github.com/twstrike/coyim/i18n"
 	"github.com/twstrike/coyim/roster"
 	"github.com/twstrike/coyim/session/events"
 	"github.com/twstrike/coyim/xmpp"
 	"github.com/twstrike/coyim/xmpp/data"
 
-	. "gopkg.in/check.v1"
+	. "github.com/twstrike/coyim/Godeps/_workspace/src/gopkg.in/check.v1"
 )
 
 func init() {
 	log.SetOutput(ioutil.Discard)
+	i18n.InitLocalization(&glib_mock.Mock{})
 }
 
 func Test(t *testing.T) { TestingT(t) }
-
-func init() {
-	log.SetOutput(ioutil.Discard)
-}
 
 type SessionXmppSuite struct{}
 
@@ -626,7 +625,7 @@ func (s *SessionXmppSuite) Test_WatchStanzas_presence_unavailable_forKnownUser(c
 		connStatus:    DISCONNECTED,
 	}
 	sess.conn = conn
-	sess.r.AddOrReplace(roster.PeerWithState("some2@one.org", "somewhere", "", ""))
+	sess.r.AddOrReplace(roster.PeerWithState("some2@one.org", "somewhere", "", "", ""))
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)
@@ -808,7 +807,7 @@ func (s *SessionXmppSuite) Test_WatchStanzas_presence_ignoresSameState(c *C) {
 		connStatus:    DISCONNECTED,
 	}
 	sess.conn = conn
-	sess.r.AddOrReplace(roster.PeerWithState("some2@one.org", "dnd", "", ""))
+	sess.r.AddOrReplace(roster.PeerWithState("some2@one.org", "dnd", "", "", ""))
 
 	observer := make(chan interface{}, 1)
 	sess.Subscribe(observer)

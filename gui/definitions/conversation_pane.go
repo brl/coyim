@@ -7,8 +7,7 @@ func init() {
 type defConversationPane struct{}
 
 func (*defConversationPane) String() string {
-	return `
-<interface>
+	return `<interface>
   <object class="GtkBox" id="box">
     <property name="visible">true</property>
     <property name="homogeneous">false</property>
@@ -19,7 +18,8 @@ func (*defConversationPane) String() string {
         <child>
           <object class="GtkMenuItem" id="conversationMenu">
             <property name="visible">true</property>
-            <property name="label" translatable="yes">Developer options</property>
+            <property name="label" translatable="yes">_Developer options</property>
+            <property name="use-underline">True</property>
             <child type="submenu">
               <object class="GtkMenu" id="menu">
                 <property name="visible">true</property>
@@ -133,11 +133,23 @@ func (*defConversationPane) String() string {
       </packing>
     </child>
     <child>
-      <object class="GtkEntry" id="message">
+      <object class="GtkScrolledWindow" id="messageScroll">
         <property name="visible">true</property>
-        <property name="has-focus">true</property>
-        <signal name="activate" handler="on_send_message_signal" />
+        <property name="vscrollbar-policy">GTK_POLICY_AUTOMATIC</property>
+        <property name="hscrollbar-policy">GTK_POLICY_AUTOMATIC</property>
+        <property name="shadow-type">in</property>
+        <child>
+          <object class="GtkTextView" id="message">
+            <property name="visible">true</property>
+            <property name="has-focus">true</property>
+            <property name="wrap-mode">GTK_WRAP_WORD_CHAR</property>
+            <property name="editable">true</property>
+            <property name="left-margin">3</property>
+            <property name="right-margin">3</property>
+          </object>
+        </child>
       </object>
+
       <packing>
         <property name="expand">false</property>
         <property name="fill">true</property>
@@ -147,6 +159,5 @@ func (*defConversationPane) String() string {
     </child>
   </object>
 </interface>
-
 `
 }

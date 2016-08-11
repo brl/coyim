@@ -2,6 +2,8 @@ package roster
 
 import (
 	"fmt"
+	"sort"
+	"sync"
 
 	"github.com/twstrike/coyim/xmpp/data"
 	xutils "github.com/twstrike/coyim/xmpp/utils"
@@ -23,6 +25,11 @@ type Peer struct {
 	PendingSubscribeID string
 	BelongsTo          string
 	LatestError        *PeerError
+	// Instead of bool here, we should be able to use priority for the resource, when we want
+	resources     map[string]bool
+	resourcesLock sync.RWMutex
+	lastResource  string
+	HasConfigData bool
 }
 
 // PeerError contains information about an error for this peer
@@ -56,14 +63,23 @@ func (p *Peer) Dump() string {
 }
 
 // PeerFrom returns a new Peer that contains the same information as the RosterEntry given
-func PeerFrom(e data.RosterEntry, belongsTo, nickname string) *Peer {
+func PeerFrom(e data.RosterEntry, belongsTo, nickname string, groups []string) *Peer {
+	// merge remote and local groups
+	g := groups
+	if g == nil || len(g) == 0 {
+		g = e.Group
+	}
+	allGroups := toSet(g...)
+
 	return &Peer{
-		Jid:          xutils.RemoveResourceFromJid(e.Jid),
-		Subscription: e.Subscription,
-		Name:         e.Name,
-		Nickname:     nickname,
-		Groups:       toSet(e.Group...),
-		BelongsTo:    belongsTo,
+		Jid:           xutils.RemoveResourceFromJid(e.Jid),
+		Subscription:  e.Subscription,
+		Name:          e.Name,
+		Nickname:      nickname,
+		Groups:        allGroups,
+		HasConfigData: groups != nil && len(groups) > 0,
+		BelongsTo:     belongsTo,
+		resources:     toSet(),
 	}
 }
 
@@ -78,14 +94,17 @@ func (p *Peer) ToEntry() data.RosterEntry {
 }
 
 // PeerWithState returns a new Peer that contains the given state information
-func PeerWithState(jid, status, statusMsg, belongsTo string) *Peer {
-	return &Peer{
+func PeerWithState(jid, status, statusMsg, belongsTo, resource string) *Peer {
+	res := &Peer{
 		Jid:       xutils.RemoveResourceFromJid(jid),
 		Status:    status,
 		StatusMsg: statusMsg,
 		Online:    true,
 		BelongsTo: belongsTo,
+		resources: toSet(),
 	}
+	res.AddResource(resource)
+	return res
 }
 
 func peerWithPendingSubscribe(jid, id, belongsTo string) *Peer {
@@ -93,6 +112,7 @@ func peerWithPendingSubscribe(jid, id, belongsTo string) *Peer {
 		Jid:                xutils.RemoveResourceFromJid(jid),
 		PendingSubscribeID: id,
 		BelongsTo:          belongsTo,
+		resources:          toSet(),
 	}
 }
 
@@ -101,6 +121,18 @@ func merge(v1, v2 string) string {
 		return v2
 	}
 	return v1
+}
+
+func union(v1, v2 map[string]bool) map[string]bool {
+	if v1 == nil {
+		v1 = toSet()
+	}
+	if v2 == nil {
+		v2 = toSet()
+	}
+	v1v := fromSet(v1)
+	v2v := fromSet(v2)
+	return toSet(append(v1v, v2v...)...)
 }
 
 // MergeWith returns a new Peer that is the merger of the receiver and the argument, giving precedence to the argument when needed
@@ -117,11 +149,16 @@ func (p *Peer) MergeWith(p2 *Peer) *Peer {
 	pNew.PendingSubscribeID = merge(p.PendingSubscribeID, p2.PendingSubscribeID)
 	pNew.Groups = make(map[string]bool)
 	pNew.BelongsTo = merge(p.BelongsTo, p2.BelongsTo)
-	if len(p2.Groups) > 0 {
-		pNew.Groups = p2.Groups
-	} else {
+	if p.HasConfigData || len(p2.Groups) == 0 {
 		pNew.Groups = p.Groups
+		pNew.HasConfigData = p.HasConfigData
+	} else {
+		pNew.Groups = p2.Groups
+		pNew.HasConfigData = p2.HasConfigData
 	}
+
+	pNew.resources = union(p.resources, p2.resources)
+
 	return pNew
 }
 
@@ -134,4 +171,79 @@ func (p *Peer) NameForPresentation() string {
 // SetLatestError will set the latest error on the jid in question
 func (p *Peer) SetLatestError(code, tp, more string) {
 	p.LatestError = &PeerError{code, tp, more}
+}
+
+// SetGroups set the Peer groups
+func (p *Peer) SetGroups(groups []string) {
+	p.Groups = toSet(groups...)
+}
+
+// AddResource adds the given resource if it isn't blank
+func (p *Peer) AddResource(s string) {
+	if s != "" {
+		p.resourcesLock.Lock()
+		defer p.resourcesLock.Unlock()
+
+		p.resources[s] = true
+	}
+}
+
+// RemoveResource removes the given resource
+func (p *Peer) RemoveResource(s string) {
+	p.resourcesLock.Lock()
+	defer p.resourcesLock.Unlock()
+
+	delete(p.resources, s)
+}
+
+// Resources returns the resources for this peer
+func (p *Peer) Resources() []string {
+	p.resourcesLock.RLock()
+	defer p.resourcesLock.RUnlock()
+
+	result := []string{}
+	for k := range p.resources {
+		result = append(result, k)
+	}
+	sort.Strings(result)
+
+	return result
+}
+
+// HasResources returns true if this peer has any online resources
+func (p *Peer) HasResources() bool {
+	p.resourcesLock.RLock()
+	defer p.resourcesLock.RUnlock()
+
+	return len(p.resources) > 0
+}
+
+// ClearResources removes all known resources for the given peer
+func (p *Peer) ClearResources() {
+	p.resourcesLock.Lock()
+	defer p.resourcesLock.Unlock()
+
+	p.resources = toSet()
+}
+
+// LastResource sets the last resource used, if not empty
+func (p *Peer) LastResource(r string) {
+	if r != "" {
+		p.lastResource = r
+	}
+}
+
+// ResourceToUse returns the resource to use for this peer
+func (p *Peer) ResourceToUse() string {
+	if p.lastResource == "" {
+		return ""
+	}
+	p.resourcesLock.RLock()
+	defer p.resourcesLock.RUnlock()
+
+	if p.resources[p.lastResource] {
+		return p.lastResource
+	}
+
+	return ""
 }

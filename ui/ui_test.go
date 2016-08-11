@@ -5,7 +5,10 @@ import (
 	"log"
 	"testing"
 
-	. "gopkg.in/check.v1"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/gotk3adapter/glib_mock"
+	"github.com/twstrike/coyim/i18n"
+
+	. "github.com/twstrike/coyim/Godeps/_workspace/src/gopkg.in/check.v1"
 )
 
 var escapingTests = []string{
@@ -20,6 +23,7 @@ func Test(t *testing.T) { TestingT(t) }
 
 func init() {
 	log.SetOutput(ioutil.Discard)
+	i18n.InitLocalization(&glib_mock.Mock{})
 }
 
 type UISuite struct{}
@@ -46,4 +50,12 @@ func (s *UISuite) TestHTMLStripping(t *C) {
 	res := StripHTML(raw)
 
 	t.Check(res, DeepEquals, exp)
+}
+
+func (s *UISuite) Test_StripSomeHTML(t *C) {
+	raw := []byte("<p>This is <walloftext>some</walloftext> <FONT color='green'>html</font><br />.")
+	exp := "This is <walloftext>some</walloftext> html."
+	res := StripSomeHTML(raw)
+
+	t.Check(string(res), DeepEquals, exp)
 }

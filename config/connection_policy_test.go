@@ -5,22 +5,24 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/twstrike/coyim/Godeps/_workspace/src/golang.org/x/net/proxy"
+
+	. "github.com/twstrike/coyim/Godeps/_workspace/src/gopkg.in/check.v1"
 	ournet "github.com/twstrike/coyim/net"
 	"github.com/twstrike/coyim/xmpp"
-	"golang.org/x/net/proxy"
-	. "gopkg.in/check.v1"
 )
 
 type ConnectionPolicySuite struct{}
 
 var _ = Suite(&ConnectionPolicySuite{})
 
-func mockTorState(addr string) ournet.TorState {
-	return &torStateMock{addr}
+func mockTorState(addr string, overTor bool) ournet.TorState {
+	return &torStateMock{addr, overTor}
 }
 
 type torStateMock struct {
-	addr string
+	addr    string
+	overTor bool
 }
 
 func (s *torStateMock) Address() string {
@@ -31,6 +33,10 @@ func (s *torStateMock) Detect() bool {
 	return len(s.addr) > 0
 }
 
+func (s *torStateMock) IsConnectionOverTor(proxy.Dialer) bool {
+	return s.overTor
+}
+
 func (s *ConnectionPolicySuite) Test_buildDialerFor_ValidatesJid(c *C) {
 	account := &Account{
 		Account: "invalid.com",
@@ -38,7 +44,7 @@ func (s *ConnectionPolicySuite) Test_buildDialerFor_ValidatesJid(c *C) {
 
 	policy := ConnectionPolicy{DialerFactory: xmpp.DialerFactory}
 
-	_, err := policy.buildDialerFor(account)
+	_, err := policy.buildDialerFor(account, nil)
 
 	c.Check(err.Error(), Equals, "invalid username (want user@domain): invalid.com")
 }
@@ -48,10 +54,10 @@ func (s *ConnectionPolicySuite) Test_buildDialerFor_UsesCustomRootCAForJabberDot
 		Account: "coyim@jabber.ccc.de",
 	}
 
-	policy := ConnectionPolicy{DialerFactory: xmpp.DialerFactory}
+	policy := ConnectionPolicy{DialerFactory: xmpp.DialerFactory, torState: mockTorState("", false)}
 
 	expectedRootCA, _ := rootCAFor("jabber.ccc.de")
-	dialer, err := policy.buildDialerFor(account)
+	dialer, err := policy.buildDialerFor(account, nil)
 
 	c.Check(err, IsNil)
 	c.Check(dialer.Config().TLSConfig.RootCAs.Subjects(),
@@ -61,13 +67,13 @@ func (s *ConnectionPolicySuite) Test_buildDialerFor_UsesCustomRootCAForJabberDot
 }
 
 func (s *ConnectionPolicySuite) Test_buildDialerFor_UsesConfiguredServerAddressAndPortAndMakesSRVLookup(c *C) {
-	policy := ConnectionPolicy{DialerFactory: xmpp.DialerFactory}
+	policy := ConnectionPolicy{DialerFactory: xmpp.DialerFactory, torState: mockTorState("", false)}
 
 	dialer, err := policy.buildDialerFor(&Account{
 		Account: "coyim@coy.im",
 		Server:  "xmpp.coy.im",
 		Port:    5234,
-	})
+	}, nil)
 
 	c.Check(err, IsNil)
 	c.Check(dialer.ServerAddress(), Equals, "xmpp.coy.im:5234")
@@ -76,7 +82,7 @@ func (s *ConnectionPolicySuite) Test_buildDialerFor_UsesConfiguredServerAddressA
 		Account: "coyim@coy.im",
 		Server:  "coy.im",
 		Port:    5234,
-	})
+	}, nil)
 
 	c.Check(err, IsNil)
 	c.Check(dialer.Config().SkipSRVLookup, Equals, false)
@@ -86,15 +92,20 @@ func (s *ConnectionPolicySuite) Test_buildDialerFor_UsesConfiguredServerAddressA
 func (s *ConnectionPolicySuite) Test_buildDialerFor_UsesAssociatedHiddenServiceIfFound(c *C) {
 	account := &Account{
 		Account: "coyim@riseup.net",
-
-		RequireTor: true,
+		Proxies: []string{
+			"tor-auto://",
+		},
 	}
 
+	currentTor := ournet.Tor
+
+	ournet.Tor = mockTorState("127.0.0.1:9999", true)
 	policy := ConnectionPolicy{
 		DialerFactory: xmpp.DialerFactory,
-		torState:      mockTorState("127.0.0.1:9999"),
+		torState:      ournet.Tor,
 	}
-	dialer, err := policy.buildDialerFor(account)
+	dialer, err := policy.buildDialerFor(account, nil)
+	ournet.Tor = currentTor
 
 	c.Check(err, IsNil)
 	c.Check(dialer.ServerAddress(), Equals, "4cjw6cwpeaeppfqz.onion:5222")
@@ -105,9 +116,9 @@ func (s *ConnectionPolicySuite) Test_buildDialerFor_IgnoresAssociatedHiddenServi
 		Account: "coyim@riseup.net",
 	}
 
-	policy := ConnectionPolicy{DialerFactory: xmpp.DialerFactory}
+	policy := ConnectionPolicy{DialerFactory: xmpp.DialerFactory, torState: mockTorState("", false)}
 
-	dialer, err := policy.buildDialerFor(account)
+	dialer, err := policy.buildDialerFor(account, nil)
 
 	c.Check(err, IsNil)
 	c.Check(dialer.ServerAddress(), Equals, "")
@@ -115,16 +126,16 @@ func (s *ConnectionPolicySuite) Test_buildDialerFor_IgnoresAssociatedHiddenServi
 
 func (s *ConnectionPolicySuite) Test_buildDialerFor_ErrorsIfTorIsRequiredButNotFound(c *C) {
 	account := &Account{
-		Account:    "coyim@riseup.net",
-		RequireTor: true,
+		Account: "coyim@riseup.net",
+		Proxies: []string{"tor-auto://"},
 	}
 
 	policy := ConnectionPolicy{
 		DialerFactory: xmpp.DialerFactory,
-		torState:      mockTorState(""),
+		torState:      mockTorState("", false),
 	}
 
-	_, err := policy.buildDialerFor(account)
+	_, err := policy.buildDialerFor(account, nil)
 
 	c.Check(err, Equals, ErrTorNotRunning)
 }

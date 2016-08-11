@@ -1,16 +1,18 @@
 package gui
 
 import (
-	"bufio"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
-	"github.com/gotk3/gotk3/glib"
-	"github.com/gotk3/gotk3/gtk"
-	"github.com/twstrike/coyim/gui/definitions"
 	"reflect"
+
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/gotk3adapter/glibi"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/gotk3adapter/gtki"
+	"github.com/twstrike/coyim/gui/definitions"
 )
 
 const (
@@ -18,11 +20,19 @@ const (
 	xmlExtension = ".xml"
 )
 
+func getActualDefsFolder() string {
+	wd, _ := os.Getwd()
+	if strings.HasSuffix(wd, "/gui") {
+		return "definitions"
+	}
+	return "gui/definitions"
+}
+
 func getDefinitionWithFileFallback(uiName string) string {
 	// this makes sure a missing definition wont break only when the app is released
 	uiDef := getDefinition(uiName)
 
-	fileName := filepath.Join(defsFolder, uiName+xmlExtension)
+	fileName := filepath.Join(getActualDefsFolder(), uiName+xmlExtension)
 	if fileNotFound(fileName) {
 		log.Printf("gui: loading compiled definition %q\n", uiName)
 		return uiDef.String()
@@ -32,17 +42,16 @@ func getDefinitionWithFileFallback(uiName string) string {
 }
 
 // This must be called from the UI thread - otherwise bad things will happen sooner or later
-func builderForDefinition(uiName string) *gtk.Builder {
-	// assertInUIThread()
-
+func builderForDefinition(uiName string) gtki.Builder {
 	template := getDefinitionWithFileFallback(uiName)
 
-	builder, err := gtk.BuilderNew()
+	builder, err := g.gtk.BuilderNew()
 	if err != nil {
 		//We cant recover from this
 		panic(err)
 	}
 
+	//XXX Why are we using AddFromString rather than NewFromString
 	err = builder.AddFromString(template)
 	if err != nil {
 		//This is a programming error
@@ -58,14 +67,8 @@ func fileNotFound(fileName string) bool {
 }
 
 func readFile(fileName string) string {
-	file, _ := os.Open(fileName)
-	reader := bufio.NewScanner(file)
-	var content string
-	for reader.Scan() {
-		content = content + reader.Text()
-	}
-	file.Close()
-	return content
+	data, _ := ioutil.ReadFile(fileName)
+	return string(data)
 }
 
 func getDefinition(uiName string) fmt.Stringer {
@@ -78,11 +81,20 @@ func getDefinition(uiName string) fmt.Stringer {
 }
 
 type builder struct {
-	*gtk.Builder
+	gtki.Builder
 }
 
-func newBuilder(uiName string) *builder {
+func newBuilder(filename string) *builder {
+	return newBuilderFromString(filename)
+}
+
+func newBuilderFromString(uiName string) *builder {
 	return &builder{builderForDefinition(uiName)}
+}
+
+func (b *builder) getObj(name string) glibi.Object {
+	obj, _ := b.GetObject(name)
+	return obj
 }
 
 func (b *builder) getItem(name string, target interface{}) {
@@ -105,7 +117,7 @@ func (b *builder) getItems(args ...interface{}) {
 	}
 }
 
-func (b *builder) get(name string) glib.IObject {
+func (b *builder) get(name string) glibi.Object {
 	obj, err := b.GetObject(name)
 	if err != nil {
 		panic("builder.GetObject() failed: " + err.Error())

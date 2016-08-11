@@ -1,44 +1,44 @@
 package config
 
 import (
-	"encoding/hex"
-	"errors"
 	"log"
+	"sort"
 	"strconv"
 	"time"
 
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/otr3"
 	"github.com/twstrike/coyim/xmpp/utils"
-	"github.com/twstrike/otr3"
-)
-
-var (
-	errCertificateSizeMismatch = errors.New("ServerCertificateSHA256 is not 32 bytes long")
 )
 
 // Account contains the configuration for one account
 type Account struct {
 	id string `json:"-"`
 
-	Account                 string
-	Server                  string             `json:",omitempty"`
-	Proxies                 []string           `json:",omitempty"`
-	Password                string             `json:",omitempty"`
-	Port                    int                `json:",omitempty"`
-	DeprecatedPrivateKey    []byte             `json:"PrivateKey,omitempty"`
-	PrivateKeys             [][]byte           `json:",omitempty"`
-	LegacyKnownFingerprints []KnownFingerprint `json:"KnownFingerprints,omitempty"`
-	Peers                   []*Peer
-	HideStatusUpdates       bool
-	RequireTor              bool
-	OTRAutoTearDown         bool
-	OTRAutoAppendTag        bool
-	OTRAutoStartSession     bool
-	ServerCertificateSHA256 string   `json:",omitempty"`
-	AlwaysEncrypt           bool     `json:",omitempty"`
-	AlwaysEncryptWith       []string `json:",omitempty"`
-	DontEncryptWith         []string `json:",omitempty"`
-	InstanceTag             uint32   `json:",omitempty"`
-	ConnectAutomatically    bool
+	//TODO: this should be JID
+	Account              string
+	Server               string   `json:",omitempty"`
+	Proxies              []string `json:",omitempty"`
+	Password             string   `json:",omitempty"`
+	Port                 int      `json:",omitempty"`
+	PrivateKeys          [][]byte `json:",omitempty"`
+	Peers                []*Peer
+	HideStatusUpdates    bool
+	OTRAutoTearDown      bool
+	OTRAutoAppendTag     bool
+	OTRAutoStartSession  bool
+	AlwaysEncrypt        bool   `json:",omitempty"`
+	InstanceTag          uint32 `json:",omitempty"`
+	ConnectAutomatically bool
+	Certificates         []*CertificatePin `json:",omitempty"`
+	PinningPolicy        string            `json:",omitempty"`
+
+	LegacyKnownFingerprints       []KnownFingerprint `json:"KnownFingerprints,omitempty"`
+	DeprecatedPrivateKey          []byte             `json:"PrivateKey,omitempty"`
+	LegacyServerCertificateSHA256 string             `json:"ServerCertificateSHA256,omitempty"`
+
+	// AlwaysEncryptWith and DontEncryptWith should be promoted to legacy and replaced with the peer settings
+	AlwaysEncryptWith []string `json:",omitempty"`
+	DontEncryptWith   []string `json:",omitempty"`
 }
 
 // AllPrivateKeys returns all private keys for this account
@@ -68,7 +68,6 @@ func NewAccount() (*Account, error) {
 	}
 
 	return &Account{
-		RequireTor:          true,
 		PrivateKeys:         SerializedKeys(pkeys),
 		AlwaysEncrypt:       true,
 		OTRAutoStartSession: true,
@@ -80,24 +79,6 @@ func NewAccount() (*Account, error) {
 	}, nil
 }
 
-// ServerCertificateHash returns the hash for the server certificate
-func (a *Account) ServerCertificateHash() ([]byte, error) {
-	var certSHA256 []byte
-	var err error
-	if len(a.ServerCertificateSHA256) > 0 {
-		certSHA256, err = hex.DecodeString(a.ServerCertificateSHA256)
-		if err != nil {
-			return nil, errors.New("Failed to parse ServerCertificateSHA256 (should be hex string): " + err.Error())
-		}
-
-		if len(certSHA256) != 32 {
-			return nil, errCertificateSizeMismatch
-		}
-	}
-
-	return certSHA256, err
-}
-
 // Is returns true if this account represents the same identity as the given JID
 func (a *Account) Is(jid string) bool {
 	return a.Account == utils.RemoveResourceFromJid(jid)
@@ -105,6 +86,12 @@ func (a *Account) Is(jid string) bool {
 
 // ShouldEncryptTo returns true if the connection with this peer should be encrypted
 func (a *Account) ShouldEncryptTo(jid string) bool {
+	p, ok := a.GetPeer(jid)
+
+	if ok && p.EncryptionSettings != Default && p.EncryptionSettings != "" {
+		return p.EncryptionSettings == AlwaysEncrypt
+	}
+
 	if a.AlwaysEncrypt {
 		return true
 	}
@@ -191,4 +178,16 @@ func (a *Account) EnsurePrivateKey() (hasUpdate bool, e error) {
 	a.PrivateKeys = append(prevKeys, SerializedKeys(newKeys)...)
 
 	return true, nil
+}
+
+// SaveCert will put the given certificate as a pinned certificate. It expects a SHA3-256 hash of the certificate.
+func (a *Account) SaveCert(subject, issuer string, sha3Digest []byte) {
+	a.Certificates = append(a.Certificates, &CertificatePin{
+		Subject:         subject,
+		Issuer:          issuer,
+		FingerprintType: "SHA3-256",
+		Fingerprint:     sha3Digest,
+	})
+	sort.Sort(CertificatePinsByNaturalOrder(a.Certificates))
+
 }

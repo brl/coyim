@@ -5,13 +5,17 @@ import (
 	"log"
 	"testing"
 
-	. "gopkg.in/check.v1"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/gotk3adapter/glib_mock"
+	"github.com/twstrike/coyim/i18n"
+
+	. "github.com/twstrike/coyim/Godeps/_workspace/src/gopkg.in/check.v1"
 )
 
 func Test(t *testing.T) { TestingT(t) }
 
 func init() {
 	log.SetOutput(ioutil.Discard)
+	i18n.InitLocalization(&glib_mock.Mock{})
 }
 
 type SASLSuite struct{}

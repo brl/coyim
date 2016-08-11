@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/otr3"
 	"github.com/twstrike/coyim/client"
 	"github.com/twstrike/coyim/config"
 	"github.com/twstrike/coyim/event"
@@ -18,10 +19,10 @@ import (
 	"github.com/twstrike/coyim/roster"
 	"github.com/twstrike/coyim/session/access"
 	"github.com/twstrike/coyim/session/events"
+	"github.com/twstrike/coyim/tls"
 	"github.com/twstrike/coyim/xmpp/data"
 	xi "github.com/twstrike/coyim/xmpp/interfaces"
 	"github.com/twstrike/coyim/xmpp/utils"
-	"github.com/twstrike/otr3"
 )
 
 type connStatus int
@@ -75,7 +76,9 @@ type session struct {
 	cmdManager  client.CommandManager
 	convManager client.ConversationManager
 
-	dialerFactory func() xi.Dialer
+	dialerFactory func(tls.Verifier) xi.Dialer
+
+	autoApproves map[string]bool
 }
 
 // GetConfig returns the current account configuration
@@ -101,7 +104,7 @@ func parseFromConfig(cu *config.Account) []otr3.PrivateKey {
 }
 
 // Factory creates a new session from the given config
-func Factory(c *config.ApplicationConfig, cu *config.Account, df func() xi.Dialer) access.Session {
+func Factory(c *config.ApplicationConfig, cu *config.Account, df func(tls.Verifier) xi.Dialer) access.Session {
 	s := &session{
 		config:        c,
 		accountConfig: cu,
@@ -112,8 +115,11 @@ func Factory(c *config.ApplicationConfig, cu *config.Account, df func() xi.Diale
 
 		timeouts: make(map[data.Cookie]time.Time),
 
-		xmppLogger:    openLogFile(c.RawLogFile),
-		dialerFactory: df,
+		autoApproves: make(map[string]bool),
+
+		xmppLogger:       openLogFile(c.RawLogFile),
+		connectionLogger: logToDebugLog(),
+		dialerFactory:    df,
 	}
 
 	s.ReloadKeys()
@@ -131,9 +137,13 @@ func (s *session) ReloadKeys() {
 }
 
 // Send will send the given message to the receiver given
-func (s *session) Send(to string, msg string) error {
-	log.Printf("<- to=%v {%v}\n", to, msg)
-	return s.conn.Send(to, msg)
+func (s *session) Send(to, resource string, msg string) error {
+	conn, ok := s.connection()
+	if ok {
+		log.Printf("<- to=%v {%v}\n", utils.ComposeFullJid(to, resource), msg)
+		return conn.Send(utils.ComposeFullJid(to, resource), msg)
+	}
+	return &access.OfflineError{Msg: i18n.Local("Couldn't send message since we are not connected")}
 }
 
 //TODO: error
@@ -195,11 +205,17 @@ func either(l, r string) string {
 func (s *session) receivedClientPresence(stanza *data.ClientPresence) bool {
 	switch stanza.Type {
 	case "subscribe":
-		s.r.SubscribeRequest(stanza.From, either(stanza.ID, "0000"), s.GetConfig().ID())
-		s.publishPeerEvent(
-			events.SubscriptionRequest,
-			utils.RemoveResourceFromJid(stanza.From),
-		)
+		jj := utils.RemoveResourceFromJid(stanza.From)
+		if s.autoApproves[jj] {
+			delete(s.autoApproves, jj)
+			s.ApprovePresenceSubscription(jj, stanza.ID)
+		} else {
+			s.r.SubscribeRequest(jj, either(stanza.ID, "0000"), s.GetConfig().ID())
+			s.publishPeerEvent(
+				events.SubscriptionRequest,
+				jj,
+			)
+		}
 	case "unavailable":
 		if !s.r.PeerBecameUnavailable(stanza.From) {
 			return true
@@ -306,6 +322,7 @@ func (s *session) readStanzasAndAlertOnErrors(stanzaChan chan data.Stanza) {
 }
 
 func (s *session) rosterReceived() {
+	s.info("Roster received")
 	s.publish(events.RosterReceived)
 }
 
@@ -335,16 +352,18 @@ func (s *session) receivedIQVersion() data.VersionReply {
 
 func peerFrom(entry data.RosterEntry, c *config.Account) *roster.Peer {
 	belongsTo := c.ID()
+
 	var nickname string
-	p, ok := c.GetPeer(entry.Jid)
-	if ok {
+	var groups []string
+	if p, ok := c.GetPeer(entry.Jid); ok {
 		nickname = p.Nickname
+		groups = p.Groups
 	}
-	return roster.PeerFrom(entry, belongsTo, nickname)
+
+	return roster.PeerFrom(entry, belongsTo, nickname, groups)
 }
 
 func (s *session) addOrMergeNewPeer(entry data.RosterEntry, c *config.Account) bool {
-
 	return s.r.AddOrMerge(peerFrom(entry, c))
 }
 
@@ -426,7 +445,7 @@ func (s *session) HandleConfirmOrDeny(jid string, isConfirm bool) {
 	}
 
 	if isConfirm {
-		s.RequestPresenceSubscription(jid)
+		s.RequestPresenceSubscription(jid, "")
 	}
 }
 
@@ -455,6 +474,9 @@ func (s *session) listenToNotifications(c <-chan string, peer string) {
 // NewConversation will create a new OTR conversation with the given peer
 //TODO: why creating a conversation is coupled to the account config and the session
 //TODO: does the creation of the OTR event handler need to be guarded with a lock?
+//TODO: Why starting a conversation requires being able to translate a message?
+//This also assumes it's useful to send friendly message to another person in
+//the same language configured on your app.
 func (s *session) NewConversation(peer string) *otr3.Conversation {
 	conversation := &otr3.Conversation{}
 	conversation.SetOurKeys(s.privateKeys)
@@ -492,7 +514,7 @@ func (s *session) NewConversation(peer string) *otr3.Conversation {
 func (s *session) processClientMessage(stanza *data.ClientMessage) {
 	log.Printf("-> Stanza %#v\n", stanza)
 
-	from := utils.RemoveResourceFromJid(stanza.From)
+	from, resource := utils.SplitJid(stanza.From)
 
 	//TODO: investigate which errors are recoverable
 	//https://xmpp.org/rfcs/rfc3920.html#stanzas-error
@@ -522,12 +544,13 @@ func (s *session) processClientMessage(stanza *data.ClientMessage) {
 		messageTime = time.Now()
 	}
 
-	s.receiveClientMessage(from, messageTime, stanza.Body)
+	s.receiveClientMessage(from, resource, messageTime, stanza.Body)
 }
 
-func (s *session) receiveClientMessage(from string, when time.Time, body string) {
-	conversation, _ := s.convManager.EnsureConversationWith(from)
-	out, err := conversation.Receive(s, []byte(body))
+func (s *session) receiveClientMessage(from, resource string, when time.Time, body string) {
+	// TODO: do we want to have different conversation instances for different resources?
+	conversation, _ := s.convManager.EnsureConversationWith(from, resource)
+	out, err := conversation.Receive(s, resource, []byte(body))
 	encrypted := conversation.IsEncrypted()
 
 	if err != nil {
@@ -555,14 +578,14 @@ func (s *session) receiveClientMessage(from string, when time.Time, body string)
 		// might send a plain text message. So we should ensure they _want_ this
 		// feature and have set it as an explicit preference.
 		if s.GetConfig().OTRAutoTearDown {
-			c, existing := s.convManager.GetConversationWith(from)
+			c, existing := s.convManager.GetConversationWith(from, resource)
 			if !existing {
 				s.alert(fmt.Sprintf("No secure session established; unable to automatically tear down OTR conversation with %s.", from))
 				break
 			} else {
 				s.info(fmt.Sprintf("%s has ended the secure conversation.", from))
 
-				err := c.EndEncryptedChat(s)
+				err := c.EndEncryptedChat(s, resource)
 				if err != nil {
 					s.info(fmt.Sprintf("Unable to automatically tear down OTR conversation with %s: %s\n", from, err.Error()))
 					break
@@ -594,13 +617,14 @@ func (s *session) receiveClientMessage(from string, when time.Time, body string)
 		return
 	}
 
-	s.messageReceived(from, when, encrypted, out)
+	s.messageReceived(from, resource, when, encrypted, out)
 }
 
-func (s *session) messageReceived(from string, timestamp time.Time, encrypted bool, message []byte) {
+func (s *session) messageReceived(from, resource string, timestamp time.Time, encrypted bool, message []byte) {
 	s.publishEvent(events.Message{
 		Session:   s,
 		From:      from,
+		Resource:  resource,
 		When:      timestamp,
 		Body:      message,
 		Encrypted: encrypted,
@@ -717,19 +741,20 @@ func (s *session) watchRoster() {
 }
 
 func (s *session) requestRoster() bool {
-	if !s.IsConnected() {
+	conn, ok := s.connection()
+	if !ok {
 		return false
 	}
 
 	s.info("Fetching roster")
 
-	delim, err := s.conn.GetRosterDelimiter()
+	delim, err := conn.GetRosterDelimiter()
 	if err != nil || delim == "" {
 		delim = defaultDelimiter
 	}
 	s.groupDelimiter = delim
 
-	rosterReply, _, err := s.conn.RequestRoster()
+	rosterReply, _, err := conn.RequestRoster()
 	if err != nil {
 		s.alert("Failed to request roster: " + err.Error())
 		return true
@@ -753,7 +778,6 @@ func (s *session) requestRoster() bool {
 	}
 
 	s.rosterReceived()
-	s.info("Roster received")
 
 	return true
 }
@@ -766,6 +790,10 @@ func (s *session) IsDisconnected() bool {
 // IsConnected returns true if this account is connected and is not in the process of connecting
 func (s *session) IsConnected() bool {
 	return s.connStatus == CONNECTED
+}
+
+func (s *session) connection() (xi.Conn, bool) {
+	return s.conn, s.connStatus == CONNECTED
 }
 
 func (s *session) setStatus(status connStatus) {
@@ -782,16 +810,12 @@ func (s *session) setStatus(status connStatus) {
 }
 
 // Connect connects to the server and starts the main threads
-func (s *session) Connect(password string) error {
+func (s *session) Connect(password string, verifier tls.Verifier) error {
 	if !s.IsDisconnected() {
 		return nil
 	}
 
 	s.setStatus(CONNECTING)
-
-	if s.connectionLogger == nil {
-		s.connectionLogger = newLogger()
-	}
 
 	conf := s.GetConfig()
 	policy := config.ConnectionPolicy{
@@ -800,9 +824,8 @@ func (s *session) Connect(password string) error {
 		DialerFactory: s.dialerFactory,
 	}
 
-	conn, err := policy.Connect(password, conf)
+	conn, err := policy.Connect(password, conf, verifier)
 	if err != nil {
-		s.alert(err.Error())
 		s.setStatus(DISCONNECTED)
 
 		return err
@@ -812,7 +835,7 @@ func (s *session) Connect(password string) error {
 		s.conn = conn
 		s.setStatus(CONNECTED)
 
-		s.conn.SignalPresence("")
+		conn.SignalPresence("")
 		go s.watchRoster()
 		go s.watchTimeout()
 		go s.watchStanzas()
@@ -826,10 +849,13 @@ func (s *session) Connect(password string) error {
 }
 
 // EncryptAndSendTo encrypts and sends the message to the given peer
-func (s *session) EncryptAndSendTo(peer string, message string) error {
+func (s *session) EncryptAndSendTo(peer, resource string, message string) error {
 	//TODO: review whether it should create a conversation
-	conversation, _ := s.convManager.EnsureConversationWith(peer)
-	return conversation.Send(s, []byte(message))
+	if s.IsConnected() {
+		conversation, _ := s.convManager.EnsureConversationWith(peer, resource)
+		return conversation.Send(s, resource, []byte(message))
+	}
+	return &access.OfflineError{Msg: i18n.Local("Couldn't send message since we are not connected")}
 }
 
 func (s *session) terminateConversations() {
@@ -853,9 +879,12 @@ func (s *session) Close() {
 
 	s.setStatus(DISCONNECTED)
 
-	if s.conn != nil {
-		s.terminateConversations()
-		s.conn.Close()
+	conn := s.conn
+	if conn != nil {
+		if !s.wantToBeOnline {
+			s.terminateConversations()
+		}
+		conn.Close()
 		s.conn = nil
 	}
 }

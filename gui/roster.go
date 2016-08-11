@@ -7,25 +7,25 @@ import (
 	"sort"
 	"time"
 
-	"github.com/gotk3/gotk3/gdk"
-	"github.com/gotk3/gotk3/gtk"
-	"github.com/twstrike/coyim/config"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/gotk3adapter/gdki"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/gotk3adapter/gtki"
 	rosters "github.com/twstrike/coyim/roster"
 	"github.com/twstrike/coyim/ui"
 )
 
 type roster struct {
-	widget *gtk.ScrolledWindow
-	model  *gtk.TreeStore
-	view   *gtk.TreeView
+	widget gtki.ScrolledWindow
+	model  gtki.TreeStore
+	view   gtki.TreeView
 
 	checkEncrypted func(to string) bool
 	sendMessage    func(to, message string)
 
 	isCollapsed map[string]bool
-	toCollapse  []*gtk.TreePath
+	toCollapse  []gtki.TreePath
 
-	ui *gtkUI
+	ui       *gtkUI
+	deNotify *desktopNotifications
 }
 
 const (
@@ -43,10 +43,11 @@ const (
 )
 
 func (u *gtkUI) newRoster() *roster {
-	builder := builderForDefinition("Roster")
+	builder := newBuilder("Roster")
 
 	r := &roster{
 		isCollapsed: make(map[string]bool),
+		deNotify:    newDesktopNotifications(),
 
 		ui: u,
 	}
@@ -55,14 +56,14 @@ func (u *gtkUI) newRoster() *roster {
 		"on_activate_buddy": r.onActivateBuddy,
 	})
 
-	obj, _ := builder.GetObject("roster")
-	r.widget = obj.(*gtk.ScrolledWindow)
+	obj := builder.getObj("roster")
+	r.widget = obj.(gtki.ScrolledWindow)
 
-	obj, _ = builder.GetObject("roster-view")
-	r.view = obj.(*gtk.TreeView)
+	obj = builder.getObj("roster-view")
+	r.view = obj.(gtki.TreeView)
 
-	obj, _ = builder.GetObject("roster-model")
-	r.model = obj.(*gtk.TreeStore)
+	obj = builder.getObj("roster-model")
+	r.model = obj.(gtki.TreeStore)
 
 	u.displaySettings.update()
 
@@ -75,16 +76,16 @@ func (r *roster) getAccount(id string) (*account, bool) {
 	return r.ui.accountManager.getAccountByID(id)
 }
 
-func getFromModelIter(m *gtk.TreeStore, iter *gtk.TreeIter, index int) string {
+func getFromModelIter(m gtki.TreeStore, iter gtki.TreeIter, index int) string {
 	val, _ := m.GetValue(iter, index)
 	v, _ := val.GetString()
 	return v
 }
 
-func (r *roster) getAccountAndJidFromEvent(bt *gdk.EventButton) (jid string, account *account, rowType string, ok bool) {
+func (r *roster) getAccountAndJidFromEvent(bt gdki.EventButton) (jid string, account *account, rowType string, ok bool) {
 	x := bt.X()
 	y := bt.Y()
-	path := new(gtk.TreePath)
+	path := g.gtk.TreePathNew()
 	found := r.view.GetPathAtPos(int(x), int(y), path, nil, nil, nil)
 	if !found {
 		return "", nil, "", false
@@ -100,15 +101,140 @@ func (r *roster) getAccountAndJidFromEvent(bt *gdk.EventButton) (jid string, acc
 	return jid, account, rowType, ok
 }
 
-func (r *roster) createAccountPeerPopup(jid string, account *account, bt *gdk.EventButton) {
-	builder := builderForDefinition("ContactPopupMenu")
-	mn := getObjIgnoringErrors(builder, "contactMenu").(*gtk.Menu)
+func sortedGroupNames(groups map[string]bool) []string {
+	sortedNames := make([]string, 0, len(groups))
+	for k := range groups {
+		sortedNames = append(sortedNames, k)
+	}
+
+	sort.Strings(sortedNames)
+
+	return sortedNames
+}
+
+func (r *roster) allGroupNames() []string {
+	groups := map[string]bool{}
+	for _, contacts := range r.ui.accountManager.getAllContacts() {
+		for name := range contacts.GetGroupNames() {
+			if groups[name] {
+				continue
+			}
+
+			groups[name] = true
+		}
+	}
+
+	return sortedGroupNames(groups)
+}
+
+func (r *roster) getGroupNamesFor(a *account) []string {
+	groups := map[string]bool{}
+	contacts := r.ui.accountManager.getAllContacts()[a]
+	for name := range contacts.GetGroupNames() {
+		if groups[name] {
+			continue
+		}
+
+		groups[name] = true
+	}
+
+	return sortedGroupNames(groups)
+}
+
+func (r *roster) updatePeer(acc *account, jid, nickname string, groups []string, updateRequireEncryption, requireEncryption bool) error {
+	peer, ok := r.ui.getPeer(acc, jid)
+	if !ok {
+		return fmt.Errorf("Could not find peer %s", jid)
+	}
+
+	// This updates what is displayed in the roster
+	peer.Nickname = nickname
+	peer.SetGroups(groups)
+
+	// NOTE: This requires the account to be connected in order to rename peers,
+	// which should not be the case. This is one example of why gui.account should
+	// own the account config -  and not the session.
+	conf := acc.session.GetConfig()
+	conf.SavePeerDetails(jid, nickname, groups)
+	if updateRequireEncryption {
+		conf.UpdateEncryptionRequired(jid, requireEncryption)
+	}
+
+	r.ui.SaveConfig()
+	doInUIThread(r.redraw)
+
+	return nil
+}
+
+func (r *roster) renamePeer(acc *account, jid, nickname string) {
+	peer, ok := r.ui.getPeer(acc, jid)
+	if !ok {
+		return
+	}
+
+	// This updates what is displayed in the roster
+	peer.Nickname = nickname
+
+	// This saves the nickname to the config file
+	// NOTE: This requires the account to be connected in order to rename peers,
+	// which should not be the case. This is one example of why gui.account should
+	// own the account config -  and not the session.
+	//acc.session.GetConfig().RenamePeer(jid, nickname)
+
+	doInUIThread(r.redraw)
+	r.ui.SaveConfig()
+}
+
+func toArray(groupList gtki.ListStore) []string {
+	groups := []string{}
+
+	iter, ok := groupList.GetIterFirst()
+	for ok {
+		gValue, _ := groupList.GetValue(iter, 0)
+		if group, err := gValue.GetString(); err == nil {
+			groups = append(groups, group)
+		}
+
+		ok = groupList.IterNext(iter)
+	}
+
+	return groups
+}
+
+func (r *roster) addGroupDialog(groupList gtki.ListStore) {
+	builder := newBuilder("GroupDetails")
+	dialog := builder.getObj("dialog").(gtki.Dialog)
+
+	nameEntry := builder.getObj("group-name").(gtki.Entry)
+
+	defaultBtn := builder.getObj("btn-ok").(gtki.Button)
+	defaultBtn.GrabDefault()
+	dialog.SetTransientFor(r.ui.window)
+	dialog.ShowAll()
+
+	response := dialog.Run()
+	defer dialog.Destroy()
+
+	if gtki.ResponseType(response) != gtki.RESPONSE_OK {
+		return
+	}
+
+	groupName, _ := nameEntry.GetText()
+	groupList.SetValue(groupList.Append(), 0, groupName)
+}
+
+func (r *roster) createAccountPeerPopup(jid string, account *account, bt gdki.EventButton) {
+	builder := newBuilder("ContactPopupMenu")
+	mn := builder.getObj("contactMenu").(gtki.Menu)
 
 	builder.ConnectSignals(map[string]interface{}{
 		"on_remove_contact": func() {
 			account.session.RemoveContact(jid)
 			r.ui.removePeer(account, jid)
 			r.redraw()
+		},
+		"on_edit_contact": func() {
+			doInUIThread(func() { r.openEditContactDialog(jid, account) })
 		},
 		"on_allow_contact_to_see_status": func() {
 			account.session.ApprovePresenceSubscription(jid, "" /* generate id */)
@@ -117,7 +243,7 @@ func (r *roster) createAccountPeerPopup(jid string, account *account, bt *gdk.Ev
 			account.session.DenyPresenceSubscription(jid, "" /* generate id */)
 		},
 		"on_ask_contact_to_see_status": func() {
-			account.session.RequestPresenceSubscription(jid)
+			account.session.RequestPresenceSubscription(jid, "")
 		},
 		"on_peer_fingerprints": func() {
 			r.ui.showFingerprintsForPeer(jid, account)
@@ -125,69 +251,22 @@ func (r *roster) createAccountPeerPopup(jid string, account *account, bt *gdk.Ev
 		"on_dump_info": func() {
 			r.debugPrintRosterFor(account.session.GetConfig().Account)
 		},
-		"on_rename_signal": func() {
-			r.renameContactPopup(account.session.GetConfig(), jid)
-		},
 	})
 
 	mn.ShowAll()
 	mn.PopupAtMouseCursor(nil, nil, int(bt.Button()), bt.Time())
 }
 
-func (r *roster) renameContactPopup(conf *config.Account, jid string) {
-	builder := builderForDefinition("RenameContact")
-	obj, _ := builder.GetObject("RenameContactPopup")
-	popup := obj.(*gtk.Dialog)
-	builder.ConnectSignals(map[string]interface{}{
-		"on_rename_signal": func() {
-			obj, _ = builder.GetObject("rename")
-			renameTxt := obj.(*gtk.Entry)
-			newName, _ := renameTxt.GetText()
-			conf.RenamePeer(jid, newName)
-			r.ui.SaveConfig()
-			r.redraw()
-			popup.Destroy()
-		},
-	})
-	popup.SetTransientFor(r.ui.window)
-	popup.ShowAll()
-}
-
-func (r *roster) createAccountPopup(jid string, account *account, bt *gdk.EventButton) {
-	builder := builderForDefinition("AccountPopupMenu")
-	obj, _ := builder.GetObject("accountMenu")
-	mn := obj.(*gtk.Menu)
-
-	builder.ConnectSignals(map[string]interface{}{
-		"on_connect": func() {
-			account.session.SetWantToBeOnline(true)
-			account.Connect()
-		},
-		"on_disconnect": func() {
-			account.session.SetWantToBeOnline(false)
-			account.disconnect()
-		},
-		"on_edit": account.edit,
-		"on_dump_info": func() {
-			r.debugPrintRosterFor(account.session.GetConfig().Account)
-		},
-	})
-
-	connx, _ := builder.GetObject("connectMenuItem")
-	connect := connx.(*gtk.MenuItem)
-
-	dconnx, _ := builder.GetObject("disconnectMenuItem")
-	disconnect := dconnx.(*gtk.MenuItem)
-
-	connect.SetSensitive(account.session.IsDisconnected())
-	disconnect.SetSensitive(!account.session.IsDisconnected())
-
+func (r *roster) createAccountPopup(jid string, account *account, bt gdki.EventButton) {
+	mn := account.createSubmenu()
+	mn.Append(account.createSeparatorItem())
+	mn.Append(account.createDumpInfoItem(r))
 	mn.ShowAll()
 	mn.PopupAtMouseCursor(nil, nil, int(bt.Button()), bt.Time())
 }
 
-func (r *roster) onButtonPress(view *gtk.TreeView, ev *gdk.Event) bool {
-	bt := &gdk.EventButton{ev}
+func (r *roster) onButtonPress(view gtki.TreeView, ev gdki.Event) bool {
+	bt := g.gdk.EventButtonFrom(ev)
 	if bt.Button() == 0x03 {
 		jid, account, rowType, ok := r.getAccountAndJidFromEvent(bt)
 		if ok {
@@ -203,7 +282,7 @@ func (r *roster) onButtonPress(view *gtk.TreeView, ev *gdk.Event) bool {
 	return false
 }
 
-func (r *roster) onActivateBuddy(v *gtk.TreeView, path *gtk.TreePath) {
+func (r *roster) onActivateBuddy(v gtki.TreeView, path gtki.TreePath) {
 	selection, _ := v.GetSelection()
 	defer selection.UnselectPath(path)
 
@@ -261,14 +340,26 @@ func (r *roster) presenceUpdated(account *account, from, show, showStatus string
 	})
 }
 
-func (r *roster) messageReceived(account *account, from string, timestamp time.Time, encrypted bool, message []byte) {
+func (r *roster) messageReceived(account *account, from, resource string, timestamp time.Time, encrypted bool, message []byte) {
+	p, ok := r.ui.getPeer(account, from)
+	if ok {
+		p.LastResource(resource)
+	}
+
 	doInUIThread(func() {
 		conv, err := r.openConversationView(account, from, false)
 		if err != nil {
 			return
 		}
 
-		conv.appendMessage(r.displayNameFor(account, from), timestamp, encrypted, ui.StripHTML(message), false)
+		conv.appendMessage(r.displayNameFor(account, from), timestamp, encrypted, ui.StripSomeHTML(message), false)
+
+		if !conv.isVisible() && r.deNotify != nil {
+			err := r.deNotify.show(from, r.displayNameFor(account, from), string(ui.StripSomeHTML(message)))
+			if err != nil {
+				log.Println(err)
+			}
+		}
 	})
 }
 
@@ -336,11 +427,11 @@ func decideStatusFor(p *rosters.Peer) string {
 	return "available"
 }
 
-func decideColorFor(p *rosters.Peer) string {
+func decideColorFor(cs colorSet, p *rosters.Peer) string {
 	if !p.Online {
-		return "#aaaaaa"
+		return cs.rosterPeerOfflineForeground
 	}
-	return "#000000"
+	return cs.rosterPeerOnlineForeground
 }
 
 func createGroupDisplayName(parentName string, counter *counter, isExpanded bool) string {
@@ -360,14 +451,15 @@ func createTooltipFor(item *rosters.Peer) string {
 	return jid
 }
 
-func (r *roster) addItem(item *rosters.Peer, parentIter *gtk.TreeIter, indent string) {
+func (r *roster) addItem(item *rosters.Peer, parentIter gtki.TreeIter, indent string) {
+	cs := r.ui.currentColorSet()
 	iter := r.model.Append(parentIter)
 	setAll(r.model, iter,
 		item.Jid,
 		fmt.Sprintf("%s %s", indent, item.NameForPresentation()),
 		item.BelongsTo,
-		decideColorFor(item),
-		"#ffffff",
+		decideColorFor(cs, item),
+		cs.rosterPeerBackground,
 		nil,
 		createTooltipFor(item),
 	)
@@ -412,16 +504,24 @@ func (c *counter) inc(total, online bool) {
 	}
 }
 
-func (r *roster) displayGroup(g *rosters.Group, parentIter *gtk.TreeIter, accountCounter *counter, showOffline bool, accountName string) {
+func (r *roster) displayGroup(g *rosters.Group, parentIter gtki.TreeIter, accountCounter *counter, showOffline bool, accountName string) {
 	pi := parentIter
 	groupCounter := &counter{}
 	groupID := accountName + "//" + g.FullGroupName()
-	if g.GroupName != "" {
+
+	isEmpty := true
+	for _, item := range g.Peers() {
+		if shouldDisplay(item, showOffline) {
+			isEmpty = false
+		}
+	}
+
+	if g.GroupName != "" && (!isEmpty || r.showEmptyGroups()) {
 		pi = r.model.Append(parentIter)
 		r.model.SetValue(pi, indexParentJid, groupID)
 		r.model.SetValue(pi, indexRowType, "group")
 		r.model.SetValue(pi, indexWeight, 500)
-		r.model.SetValue(pi, indexBackgroundColor, "#e9e7f3")
+		r.model.SetValue(pi, indexBackgroundColor, r.ui.currentColorSet().rosterGroupBackground)
 	}
 
 	for _, item := range g.Peers() {
@@ -453,6 +553,7 @@ func (r *roster) displayGroup(g *rosters.Group, parentIter *gtk.TreeIter, accoun
 }
 
 func (r *roster) redrawSeparateAccount(account *account, contacts *rosters.List, showOffline bool) {
+	cs := r.ui.currentColorSet()
 	parentIter := r.model.Append(nil)
 
 	accountCounter := &counter{}
@@ -466,9 +567,9 @@ func (r *roster) redrawSeparateAccount(account *account, contacts *rosters.List,
 	r.model.SetValue(parentIter, indexRowType, "account")
 	r.model.SetValue(parentIter, indexWeight, 700)
 
-	bgcolor := "#918caa"
+	bgcolor := cs.rosterAccountOnlineBackground
 	if account.session.IsDisconnected() {
-		bgcolor = "#d5d3de"
+		bgcolor = cs.rosterAccountOfflineBackground
 	}
 	r.model.SetValue(parentIter, indexBackgroundColor, bgcolor)
 
@@ -505,6 +606,10 @@ func (r *roster) sortedAccounts() []*account {
 	return as
 }
 
+func (r *roster) showEmptyGroups() bool {
+	return r.ui.settings.GetShowEmptyGroups()
+}
+
 func (r *roster) redrawSeparate() {
 	showOffline := !r.ui.config.Display.ShowOnlyOnline
 
@@ -538,7 +643,7 @@ func (r *roster) redraw() {
 	}
 }
 
-func setAll(v *gtk.TreeStore, iter *gtk.TreeIter, values ...interface{}) {
+func setAll(v gtki.TreeStore, iter gtki.TreeIter, values ...interface{}) {
 	for i, val := range values {
 		if val != nil {
 			v.SetValue(iter, i, val)

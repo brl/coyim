@@ -7,15 +7,18 @@ import (
 	"log"
 	"testing"
 
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/gotk3adapter/glib_mock"
+	"github.com/twstrike/coyim/i18n"
 	"github.com/twstrike/coyim/xmpp/data"
 
-	. "gopkg.in/check.v1"
+	. "github.com/twstrike/coyim/Godeps/_workspace/src/gopkg.in/check.v1"
 )
 
 func Test(t *testing.T) { TestingT(t) }
 
 func init() {
 	log.SetOutput(ioutil.Discard)
+	i18n.InitLocalization(&glib_mock.Mock{})
 }
 
 type XmppSuite struct{}
@@ -251,6 +254,6 @@ func (s *XmppSuite) TestConnSend(c *C) {
 		jid: "jid",
 	}
 	err := conn.Send("example@xmpp.com", "message")
-	c.Assert(string(mockOut.write), Matches, "<message to='example@xmpp.com' from='jid' type='chat'><body>message</body><nos:x xmlns:nos='google:nosave' value='enabled'/><arc:record xmlns:arc='http://jabber.org/protocol/archive' otr='require'/></message>")
+	c.Assert(string(mockOut.write), Matches, "<message to='example@xmpp.com' from='jid' type='chat'><body>message</body><nos:x xmlns:nos='google:nosave' value='enabled'/><arc:record xmlns:arc='http://jabber.org/protocol/archive' otr='require'/><no-copy xmlns='urn:xmpp:hints'/><no-permanent-store xmlns='urn:xmpp:hints'/><private xmlns='urn:xmpp:carbons:2'/></message>")
 	c.Assert(err, IsNil)
 }

@@ -7,8 +7,7 @@ func init() {
 type defMain struct{}
 
 func (*defMain) String() string {
-	return `
-<interface>
+	return `<interface>
   <object class="GtkApplicationWindow" id="mainWindow">
     <property name="can_focus">False</property>
     <property name="title">CoyIM</property>
@@ -29,7 +28,8 @@ func (*defMain) String() string {
                 <child>
                   <object class="GtkMenuItem" id="ContactsMenu">
                     <property name="can_focus">False</property>
-                    <property name="label" translatable="yes">Contacts</property>
+                    <property name="label" translatable="yes">_Contacts</property>
+                    <property name="use-underline">True</property>
                     <child type="submenu">
                       <object class="GtkMenu" id="menu">
                         <property name="can_focus">False</property>
@@ -47,13 +47,15 @@ func (*defMain) String() string {
                 <child>
                   <object class="GtkMenuItem" id="AccountsMenu">
                     <property name="can_focus">False</property>
-                    <property name="label" translatable="yes">Accounts</property>
+                    <property name="label" translatable="yes">_Accounts</property>
+                    <property name="use-underline">True</property>
                   </object>
                 </child>
                 <child>
                   <object class="GtkMenuItem" id="ViewMenu">
                     <property name="can_focus">False</property>
-                    <property name="label" translatable="yes">View</property>
+                    <property name="label" translatable="yes">_View</property>
+                    <property name="use-underline">True</property>
                     <child type="submenu">
                       <object class="GtkMenu" id="menu2">
                         <property name="can_focus">False</property>
@@ -69,6 +71,33 @@ func (*defMain) String() string {
                             <property name="can_focus">False</property>
                             <property name="label" translatable="yes">Show Offline Contacts</property>
                             <signal name="toggled" handler="on_toggled_check_Item_Show_Offline_signal" swapped="no"/>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkMenuItem" id="OptionsMenu">
+                    <property name="can-focus">False</property>
+                    <property name="label" translatable="yes">_Options</property>
+                    <property name="use-underline">True</property>
+                    <child type="submenu">
+                      <object class="GtkMenu" id="options_submenu">
+                        <property name="can_focus">False</property>
+                        <child>
+                          <object class="GtkCheckMenuItem" id="EncryptConfigurationFileCheckMenuItem">
+                            <property name="can_focus">False</property>
+                            <property name="label" translatable="yes">Encrypt configuration file</property>
+                            <signal name="toggled" handler="on_toggled_encrypt_configuration_file_signal" swapped="no"/>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="GtkMenuItem" id="preferencesMenuItem">
+                            <property name="can_focus">False</property>
+                            <property name="label" translatable="yes">_Preferences...</property>
+                            <property name="use-underline">True</property>
+                            <signal name="activate" handler="on_preferences_signal" swapped="no"/>
                           </object>
                         </child>
                       </object>
@@ -130,6 +159,5 @@ func (*defMain) String() string {
     </child>
   </object>
 </interface>
-
 `
 }

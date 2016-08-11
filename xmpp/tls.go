@@ -7,8 +7,6 @@
 package xmpp
 
 import (
-	"bytes"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -58,19 +56,28 @@ func certName(cert *x509.Certificate) string {
 	return ret
 }
 
-func printTLSDetails(w io.Writer, tlsState tls.ConnectionState) {
-	version, ok := tlsVersionStrings[tlsState.Version]
-	if !ok {
-		version = "unknown"
-	}
-
+// GetCipherSuiteName returns a human readable string of the cipher suite used in the state
+func GetCipherSuiteName(tlsState tls.ConnectionState) string {
 	cipherSuite, ok := tlsCipherSuiteNames[tlsState.CipherSuite]
 	if !ok {
-		cipherSuite = "unknown"
+		return "unknown"
+	}
+	return cipherSuite
+}
+
+// GetTLSVersion returns a human readable string of the TLS version used in the state
+func GetTLSVersion(tlsState tls.ConnectionState) string {
+	version, ok := tlsVersionStrings[tlsState.Version]
+	if !ok {
+		return "unknown"
 	}
 
-	fmt.Fprintf(w, "  SSL/TLS version: %s\n", version)
-	fmt.Fprintf(w, "  Cipher suite: %s\n", cipherSuite)
+	return version
+}
+
+func printTLSDetails(w io.Writer, tlsState tls.ConnectionState) {
+	fmt.Fprintf(w, "  SSL/TLS version: %s\n", GetTLSVersion(tlsState))
+	fmt.Fprintf(w, "  Cipher suite: %s\n", GetCipherSuiteName(tlsState))
 }
 
 // RFC 6120, section 5.4
@@ -95,8 +102,6 @@ func (d *dialer) negotiateSTARTTLS(c interfaces.Conn, conn net.Conn) error {
 }
 
 func (d *dialer) startTLS(c interfaces.Conn, conn net.Conn) error {
-	address := d.GetServer()
-
 	fmt.Fprintf(c.Out(), "<starttls xmlns='%s'/>", NsTLS)
 
 	proceed, err := nextStart(c.In())
@@ -126,52 +131,8 @@ func (d *dialer) startTLS(c interfaces.Conn, conn net.Conn) error {
 	tlsState := tlsConn.ConnectionState()
 	printTLSDetails(l, tlsState)
 
-	haveCertHash := len(c.Config().ServerCertificateSHA256) != 0
-	if haveCertHash {
-		h := sha256.New()
-		h.Write(tlsState.PeerCertificates[0].Raw)
-		if digest := h.Sum(nil); !bytes.Equal(digest, c.Config().ServerCertificateSHA256) {
-			return fmt.Errorf("xmpp: server certificate does not match expected hash (got: %x, want: %x)",
-				digest, c.Config().ServerCertificateSHA256)
-		}
-	} else {
-		if len(tlsState.PeerCertificates) == 0 {
-			return errors.New("xmpp: server has no certificates")
-		}
-
-		opts := x509.VerifyOptions{
-			Intermediates: x509.NewCertPool(),
-			Roots:         tlsConfig.RootCAs,
-		}
-		for _, cert := range tlsState.PeerCertificates[1:] {
-			opts.Intermediates.AddCert(cert)
-		}
-		verifiedChains, err := tlsState.PeerCertificates[0].Verify(opts)
-		if err != nil {
-			return errors.New("xmpp: failed to verify TLS certificate: " + err.Error())
-		}
-
-		for i, cert := range verifiedChains[0] {
-			fmt.Fprintf(l, "  certificate %d: %s\n", i, certName(cert))
-		}
-		leafCert := verifiedChains[0][0]
-
-		if err := leafCert.VerifyHostname(c.OriginDomain()); err != nil {
-			if c.Config().TrustedAddress {
-				fmt.Fprintf(l, "Certificate fails to verify against domain in username: %s\n", err)
-				host, _, err := net.SplitHostPort(address)
-				if err != nil {
-					return errors.New("xmpp: failed to split address when checking whether TLS certificate is valid: " + err.Error())
-				}
-
-				if err = leafCert.VerifyHostname(host); err != nil {
-					return errors.New("xmpp: failed to match TLS certificate to address after failing to match to username: " + err.Error())
-				}
-				fmt.Fprintf(l, "Certificate matches against trusted server hostname: %s\n", host)
-			} else {
-				return errors.New("xmpp: failed to match TLS certificate to name: " + err.Error())
-			}
-		}
+	if err = d.verifier.Verify(tlsState, tlsConfig, c.OriginDomain()); err != nil {
+		return err
 	}
 
 	d.bindTransport(c, tlsConn)

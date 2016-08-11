@@ -5,8 +5,19 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+)
 
-	"github.com/twstrike/coyim/i18n"
+// EncryptionSettings configures the encryption setting for this peer
+type EncryptionSettings string
+
+const (
+	// Default encrypts conversations with this peer depending on the account
+	// configuration (config.Account#AlwaysEncrypt)
+	Default EncryptionSettings = "default"
+	// AlwaysEncrypt always encrypts conversations with this peer
+	AlwaysEncrypt = "always"
+	// NeverEncrypt never encrypts conversations with this peer
+	NeverEncrypt = "never"
 )
 
 // FingerprintForSerialization represents a fingerprint in its serialized form
@@ -23,9 +34,12 @@ type Fingerprint struct {
 
 // Peer represents one peer
 type Peer struct {
-	UserID       string
+	UserID             string
+	Nickname           string
+	EncryptionSettings EncryptionSettings `json:",omitempty"`
+
+	Groups       []string `json:",omitempty"`
 	Fingerprints []*Fingerprint
-	Nickname	 string
 }
 
 // MarshalJSON is used to create a JSON representation of this fingerprint
@@ -65,7 +79,8 @@ func (s ByNaturalOrder) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 
 func (a *Account) updateToLatestVersion() bool {
 	return a.updateFingerprintsToLatestVersion() ||
-		a.removeEmptyFingerprints()
+		a.removeEmptyFingerprints() ||
+		a.updateCertificatePins()
 }
 
 func (a *Account) removeEmptyFingerprints() bool {
@@ -170,7 +185,7 @@ func (a *Account) UserIDForVerifiedFingerprint(fpr []byte) string {
 }
 
 var (
-	errFingerprintAlreadyAuthorized = errors.New(i18n.Local("the fingerprint is already authorized"))
+	errFingerprintAlreadyAuthorized = errors.New("the fingerprint is already authorized")
 )
 
 // AuthorizeFingerprint will authorize and add the fingerprint for the given user
@@ -216,7 +231,21 @@ func (a *Account) RemovePeer(uid string) {
 	a.Peers = newPeers
 }
 
-// RenamePeer sets the nickname for the account
-func (a *Account) RenamePeer(pid, nickname string) {
-	a.EnsurePeer(pid).Nickname = nickname
+// SavePeerDetails store peer identifiable information only locally
+func (a *Account) SavePeerDetails(jid, nickname string, groups []string) {
+	p := a.EnsurePeer(jid)
+	p.Nickname = nickname
+	p.Groups = groups
+}
+
+// UpdateEncryptionRequired will set a specific encryption setting for this peer
+func (a *Account) UpdateEncryptionRequired(jid string, requireEnc bool) {
+	p := a.EnsurePeer(jid)
+	if requireEnc {
+		p.EncryptionSettings = AlwaysEncrypt
+		a.AlwaysEncryptWith = append(a.AlwaysEncryptWith, jid)
+	} else {
+		p.EncryptionSettings = NeverEncrypt
+		a.DontEncryptWith = append(a.DontEncryptWith, jid)
+	}
 }

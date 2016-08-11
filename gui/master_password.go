@@ -1,25 +1,25 @@
 package gui
 
 import (
-	"github.com/gotk3/gotk3/gtk"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/gotk3adapter/gtki"
 	"github.com/twstrike/coyim/config"
 	"github.com/twstrike/coyim/i18n"
 )
 
 func (u *gtkUI) captureInitialMasterPassword(k func()) {
 	dialogID := "CaptureInitialMasterPassword"
-	builder := builderForDefinition(dialogID)
-	dialogOb, _ := builder.GetObject(dialogID)
-	pwdDialog := dialogOb.(*gtk.Dialog)
+	builder := newBuilder(dialogID)
+	dialogOb := builder.getObj(dialogID)
+	pwdDialog := dialogOb.(gtki.Dialog)
 
-	passObj, _ := builder.GetObject("password")
-	password := passObj.(*gtk.Entry)
+	passObj := builder.getObj("password")
+	password := passObj.(gtki.Entry)
 
-	pass2Obj, _ := builder.GetObject("password2")
-	password2 := pass2Obj.(*gtk.Entry)
+	pass2Obj := builder.getObj("password2")
+	password2 := pass2Obj.(gtki.Entry)
 
-	msgObj, _ := builder.GetObject("passMessage")
-	messageObj := msgObj.(*gtk.Label)
+	msgObj := builder.getObj("passMessage")
+	messageObj := msgObj.(gtki.Label)
 	messageObj.SetSelectable(true)
 
 	builder.ConnectSignals(map[string]interface{}{
@@ -54,15 +54,15 @@ func (u *gtkUI) captureInitialMasterPassword(k func()) {
 
 func (u *gtkUI) wouldYouLikeToEncryptYourFile(k func(bool)) {
 	dialogID := "AskToEncrypt"
-	builder := builderForDefinition(dialogID)
+	builder := newBuilder(dialogID)
 
-	dialogOb, _ := builder.GetObject(dialogID)
-	encryptDialog := dialogOb.(*gtk.MessageDialog)
-	encryptDialog.SetDefaultResponse(gtk.RESPONSE_YES)
+	dialogOb := builder.getObj(dialogID)
+	encryptDialog := dialogOb.(gtki.MessageDialog)
+	encryptDialog.SetDefaultResponse(gtki.RESPONSE_YES)
 	encryptDialog.SetTransientFor(u.window)
 
-	responseType := gtk.ResponseType(encryptDialog.Run())
-	result := responseType == gtk.RESPONSE_YES
+	responseType := gtki.ResponseType(encryptDialog.Run())
+	result := responseType == gtki.RESPONSE_YES
 	encryptDialog.Destroy()
 	k(result)
 }
@@ -97,17 +97,17 @@ func (u *gtkUI) getMasterPassword(params config.EncryptionParameters, lastAttemp
 	var cleanup func()
 
 	doInUIThread(func() {
-		builder := builderForDefinition(dialogID)
-		dialogOb, _ := builder.GetObject(dialogID)
-		dialog := dialogOb.(*gtk.Dialog)
+		builder := newBuilder(dialogID)
+		dialogOb := builder.getObj(dialogID)
+		dialog := dialogOb.(gtki.Dialog)
 
 		cleanup = dialog.Destroy
 
-		passObj, _ := builder.GetObject("password")
-		password := passObj.(*gtk.Entry)
+		passObj := builder.getObj("password")
+		password := passObj.(gtki.Entry)
 
-		msgObj, _ := builder.GetObject("passMessage")
-		messageObj := msgObj.(*gtk.Label)
+		msgObj := builder.getObj("passMessage")
+		messageObj := msgObj.(gtki.Label)
 		messageObj.SetSelectable(true)
 
 		if lastAttemptFailed {

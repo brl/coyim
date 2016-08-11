@@ -7,13 +7,12 @@ func init() {
 type defMasterPassword struct{}
 
 func (*defMasterPassword) String() string {
-	return `
-<interface>
+	return `<interface>
   <object class="GtkDialog" id="MasterPassword">
     <property name="window-position">GTK_WIN_POS_CENTER</property>
     <property name="title" translatable="yes">Enter master password</property>
     <property name="default-width">300</property>
-    <signal name="close" handler="on_cancel_signal" />
+    <signal name="delete-event" handler="on_cancel_signal" />
     <child internal-child="vbox">
       <object class="GtkBox" id="Vbox">
         <property name="margin">10</property>
@@ -64,6 +63,5 @@ func (*defMasterPassword) String() string {
     </child>
   </object>
 </interface>
-
 `
 }

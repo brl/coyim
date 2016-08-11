@@ -5,13 +5,17 @@ import (
 	"log"
 	"testing"
 
-	g "gopkg.in/check.v1"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/gotk3adapter/glib_mock"
+	"github.com/twstrike/coyim/i18n"
+
+	g "github.com/twstrike/coyim/Godeps/_workspace/src/gopkg.in/check.v1"
 )
 
 func Test(t *testing.T) { g.TestingT(t) }
 
 func init() {
 	log.SetOutput(ioutil.Discard)
+	i18n.InitLocalization(&glib_mock.Mock{})
 }
 
 type ListSuite struct{}
@@ -92,7 +96,7 @@ func (s *ListSuite) Test_AddOrReplace_mergesTheEntriesIfInTheList(c *g.C) {
 
 	c.Assert(res, g.Equals, false)
 	c.Assert(len(l.peers), g.Equals, 1)
-	c.Assert(*l.peers["somewhere"], g.DeepEquals, Peer{Jid: "somewhere", Name: "something2", Groups: toSet("goodbye"), Subscription: "from"})
+	c.Assert(*l.peers["somewhere"], g.DeepEquals, Peer{Jid: "somewhere", Name: "something2", Groups: toSet("goodbye"), Subscription: "from", resources: toSet()})
 }
 
 func (s *ListSuite) Test_ToSlice_createsASliceOfTheContentSortedAlphabetically(c *g.C) {
@@ -274,8 +278,8 @@ func (s *ListSuite) Test_PeerPresenceUpdate_sometimesUpdatesNonExistantPeers(c *
 
 func (s *ListSuite) Test_PeerPresenceUpdate_updatesPreviouslyKnownPeer(c *g.C) {
 	l := New()
-	l.AddOrMerge(&Peer{Jid: "foo@bar.com", Online: false})
-	l.AddOrMerge(&Peer{Jid: "foo2@bar.com", Online: true, Status: "dnd", StatusMsg: "working"})
+	l.AddOrMerge(&Peer{Jid: "foo@bar.com", Online: false, resources: toSet()})
+	l.AddOrMerge(&Peer{Jid: "foo2@bar.com", Online: true, Status: "dnd", StatusMsg: "working", resources: toSet()})
 
 	res := l.PeerPresenceUpdate("foo@bar.com/hmm", "hello", "goodbye", "")
 	c.Assert(res, g.Equals, true)

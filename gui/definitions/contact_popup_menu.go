@@ -7,8 +7,7 @@ func init() {
 type defContactPopupMenu struct{}
 
 func (*defContactPopupMenu) String() string {
-	return `
-<interface>
+	return `<interface>
   <object class="GtkMenu" id="contactMenu">
     <child>
       <object class="GtkMenuItem" id="peerFingerprintsMenuItem">
@@ -20,15 +19,15 @@ func (*defContactPopupMenu) String() string {
       <object class="GtkSeparatorMenuItem" id="sep1"/>
     </child>
     <child>
-      <object class="GtkMenuItem" id="removeContactMenuItem">
-        <property name="label" translatable="yes">Remove</property>
-        <signal name="activate" handler="on_remove_contact" />
+      <object class="GtkMenuItem" id="editContactMenuItem">
+        <property name="label" translatable="yes">Edit...</property>
+        <signal name="activate" handler="on_edit_contact" />
       </object>
     </child>
     <child>
-      <object class="GtkMenuItem" id="renameMenuItem">
-        <property name="label" translatable="yes">Rename...</property>
-        <signal name="activate" handler="on_rename_signal" />
+      <object class="GtkMenuItem" id="removeContactMenuItem">
+        <property name="label" translatable="yes">Remove</property>
+        <signal name="activate" handler="on_remove_contact" />
       </object>
     </child>
     <child>
@@ -63,6 +62,5 @@ func (*defContactPopupMenu) String() string {
     </child>
   </object>
 </interface>
-
 `
 }

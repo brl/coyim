@@ -5,15 +5,16 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 
-	"github.com/gotk3/gotk3/gtk"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/gotk3adapter/gtki"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/otr3"
 	"github.com/twstrike/coyim/config"
 	"github.com/twstrike/coyim/config/importer"
 	"github.com/twstrike/coyim/i18n"
-	"github.com/twstrike/otr3"
 )
 
-func valAt(s *gtk.ListStore, iter *gtk.TreeIter, col int) interface{} {
+func valAt(s gtki.ListStore, iter gtki.TreeIter, col int) interface{} {
 	gv, _ := s.GetValue(iter, col)
 	vv, _ := gv.GoValue()
 	return vv
@@ -68,13 +69,13 @@ func (u *gtkUI) runImporter() {
 	importSettings := make(map[applicationAndAccount]bool)
 	allImports := importer.TryImportAll()
 
-	builder := builderForDefinition("Importer")
+	builder := newBuilder("Importer")
 
-	win, _ := builder.GetObject("importerWindow")
-	w := win.(*gtk.Dialog)
+	win := builder.getObj("importerWindow")
+	w := win.(gtki.Dialog)
 
-	store, _ := builder.GetObject("importAccountsStore")
-	s := store.(*gtk.ListStore)
+	store := builder.getObj("importAccountsStore")
+	s := store.(gtki.ListStore)
 
 	for appName, v := range allImports {
 		for _, vv := range v {
@@ -87,8 +88,8 @@ func (u *gtkUI) runImporter() {
 		}
 	}
 
-	rend, _ := builder.GetObject("import-this-account-renderer")
-	rr := rend.(*gtk.CellRendererToggle)
+	rend := builder.getObj("import-this-account-renderer")
+	rr := rend.(gtki.CellRendererToggle)
 
 	rr.Connect("toggled", func(_ interface{}, path string) {
 		iter, _ := s.GetIterFromString(path)
@@ -102,13 +103,13 @@ func (u *gtkUI) runImporter() {
 	})
 
 	w.Connect("response", func(_ interface{}, rid int) {
-		if gtk.ResponseType(rid) == gtk.RESPONSE_OK {
+		if gtki.ResponseType(rid) == gtki.RESPONSE_OK {
 			u.doActualImportOf(importSettings, allImports)
 		}
 		w.Destroy()
 	})
 
-	u.connectShortcutsChildWindow(&w.Window)
+	u.connectShortcutsChildWindow(w)
 	doInUIThread(func() {
 		w.SetTransientFor(u.window)
 		w.ShowAll()
@@ -136,19 +137,95 @@ func (u *gtkUI) importFingerprintsFor(account *config.Account, file string) (int
 	return num, true
 }
 
+func firstItem(mm map[string][]byte) []byte {
+	for _, v := range mm {
+		return v
+	}
+	return nil
+}
+
+func sortKeys(keys map[string]otr3.PrivateKey) []string {
+	res := []string{}
+
+	for k := range keys {
+		res = append(res, k)
+	}
+
+	sort.Strings(res)
+
+	return res
+}
+
+func (u *gtkUI) chooseKeyToImport(keys map[string][]byte) ([]byte, bool) {
+	result := make(chan int)
+	parsedKeys := make(map[string]otr3.PrivateKey)
+	for v, vv := range keys {
+		_, ok, parsedKey := otr3.ParsePrivateKey(vv)
+		if ok {
+			parsedKeys[v] = parsedKey
+		}
+	}
+	sortedKeys := sortKeys(parsedKeys)
+
+	doInUIThread(func() {
+		builder := newBuilder("ChooseKeyToImport")
+		d := builder.getObj("dialog").(gtki.Dialog)
+		d.SetTransientFor(u.window)
+		keyBox := builder.getObj("keys").(gtki.ComboBoxText)
+
+		for _, s := range sortedKeys {
+			kval := parsedKeys[s]
+			keyBox.AppendText(fmt.Sprintf("%s -- %s", s, config.FormatFingerprint(kval.PublicKey().Fingerprint())))
+		}
+
+		keyBox.SetActive(0)
+
+		builder.ConnectSignals(map[string]interface{}{
+			"on_import_signal": func() {
+				ix := keyBox.GetActive()
+				if ix != -1 {
+					result <- ix
+					close(result)
+					d.Destroy()
+				}
+			},
+
+			"on_cancel_signal": func() {
+				close(result)
+				d.Destroy()
+			},
+		})
+
+		d.ShowAll()
+	})
+
+	res, ok := <-result
+	if ok {
+		return keys[sortedKeys[res]], true
+	}
+	return nil, false
+}
+
 func (u *gtkUI) importKeysFor(account *config.Account, file string) (int, bool) {
 	keys, ok := importer.ImportKeysFromPidginStyle(file, func(string) bool { return true })
 	if !ok {
 		return 0, false
 	}
 
-	newKeys := [][]byte{}
-	for _, kk := range keys {
-		newKeys = append(newKeys, kk)
+	switch len(keys) {
+	case 0:
+		return 0, true
+	case 1:
+		account.PrivateKeys = [][]byte{firstItem(keys)}
+		return 1, true
+	default:
+		kk, ok := u.chooseKeyToImport(keys)
+		if ok {
+			account.PrivateKeys = [][]byte{kk}
+			return 1, true
+		}
+		return 0, false
 	}
-	account.PrivateKeys = newKeys
-
-	return len(newKeys), true
 }
 
 func (u *gtkUI) exportFingerprintsFor(account *config.Account, file string) bool {
@@ -193,42 +270,45 @@ func (u *gtkUI) exportKeysFor(account *config.Account, file string) bool {
 	return err == nil
 }
 
-func (u *gtkUI) importKeysForDialog(account *config.Account, w *gtk.Dialog) {
-	dialog, _ := gtk.FileChooserDialogNewWith2Buttons(
+func (u *gtkUI) importKeysForDialog(account *config.Account, w gtki.Dialog) {
+	dialog, _ := g.gtk.FileChooserDialogNewWith2Buttons(
 		i18n.Local("Import private keys"),
-		&w.Window,
-		gtk.FILE_CHOOSER_ACTION_OPEN,
+		w,
+		gtki.FILE_CHOOSER_ACTION_OPEN,
 		i18n.Local("_Cancel"),
-		gtk.RESPONSE_CANCEL,
+		gtki.RESPONSE_CANCEL,
 		i18n.Local("_Import"),
-		gtk.RESPONSE_OK,
+		gtki.RESPONSE_OK,
 	)
 
-	if gtk.ResponseType(dialog.Run()) == gtk.RESPONSE_OK {
-		num, ok := u.importKeysFor(account, dialog.GetFilename())
-		if ok {
-			u.notify(i18n.Local("Keys imported"), fmt.Sprintf(i18n.Local("%d key(s) were imported correctly."), num))
-		} else {
-			u.notify(i18n.Local("Failure importing keys"), fmt.Sprintf(i18n.Local("Couldn't import any keys from %s."), dialog.GetFilename()))
-		}
+	if gtki.ResponseType(dialog.Run()) == gtki.RESPONSE_OK {
+		fname := dialog.GetFilename()
+		go func() {
+			_, ok := u.importKeysFor(account, fname)
+			if ok {
+				u.notify(i18n.Local("Keys imported"), i18n.Local("The key was imported correctly."))
+			} else {
+				u.notify(i18n.Local("Failure importing keys"), fmt.Sprintf(i18n.Local("Couldn't import any keys from %s."), fname))
+			}
+		}()
 	}
 	dialog.Destroy()
 }
 
-func (u *gtkUI) exportKeysForDialog(account *config.Account, w *gtk.Dialog) {
-	dialog, _ := gtk.FileChooserDialogNewWith2Buttons(
+func (u *gtkUI) exportKeysForDialog(account *config.Account, w gtki.Dialog) {
+	dialog, _ := g.gtk.FileChooserDialogNewWith2Buttons(
 		i18n.Local("Export private keys"),
-		&w.Window,
-		gtk.FILE_CHOOSER_ACTION_SAVE,
+		w,
+		gtki.FILE_CHOOSER_ACTION_SAVE,
 		i18n.Local("_Cancel"),
-		gtk.RESPONSE_CANCEL,
+		gtki.RESPONSE_CANCEL,
 		i18n.Local("_Export"),
-		gtk.RESPONSE_OK,
+		gtki.RESPONSE_OK,
 	)
 
 	dialog.SetCurrentName("otr.private_key")
 
-	if gtk.ResponseType(dialog.Run()) == gtk.RESPONSE_OK {
+	if gtki.ResponseType(dialog.Run()) == gtki.RESPONSE_OK {
 		ok := u.exportKeysFor(account, dialog.GetFilename())
 		if ok {
 			u.notify(i18n.Local("Keys exported"), i18n.Local("Keys were exported correctly."))
@@ -239,18 +319,18 @@ func (u *gtkUI) exportKeysForDialog(account *config.Account, w *gtk.Dialog) {
 	dialog.Destroy()
 }
 
-func (u *gtkUI) importFingerprintsForDialog(account *config.Account, w *gtk.Dialog) {
-	dialog, _ := gtk.FileChooserDialogNewWith2Buttons(
+func (u *gtkUI) importFingerprintsForDialog(account *config.Account, w gtki.Dialog) {
+	dialog, _ := g.gtk.FileChooserDialogNewWith2Buttons(
 		i18n.Local("Import fingerprints"),
-		&w.Window,
-		gtk.FILE_CHOOSER_ACTION_OPEN,
+		w,
+		gtki.FILE_CHOOSER_ACTION_OPEN,
 		i18n.Local("_Cancel"),
-		gtk.RESPONSE_CANCEL,
+		gtki.RESPONSE_CANCEL,
 		i18n.Local("_Import"),
-		gtk.RESPONSE_OK,
+		gtki.RESPONSE_OK,
 	)
 
-	if gtk.ResponseType(dialog.Run()) == gtk.RESPONSE_OK {
+	if gtki.ResponseType(dialog.Run()) == gtki.RESPONSE_OK {
 		num, ok := u.importFingerprintsFor(account, dialog.GetFilename())
 		if ok {
 			u.notify(i18n.Local("Fingerprints imported"), fmt.Sprintf(i18n.Local("%d fingerprint(s) were imported correctly."), num))
@@ -261,20 +341,20 @@ func (u *gtkUI) importFingerprintsForDialog(account *config.Account, w *gtk.Dial
 	dialog.Destroy()
 }
 
-func (u *gtkUI) exportFingerprintsForDialog(account *config.Account, w *gtk.Dialog) {
-	dialog, _ := gtk.FileChooserDialogNewWith2Buttons(
+func (u *gtkUI) exportFingerprintsForDialog(account *config.Account, w gtki.Dialog) {
+	dialog, _ := g.gtk.FileChooserDialogNewWith2Buttons(
 		i18n.Local("Export fingerprints"),
-		&w.Window,
-		gtk.FILE_CHOOSER_ACTION_SAVE,
+		w,
+		gtki.FILE_CHOOSER_ACTION_SAVE,
 		i18n.Local("_Cancel"),
-		gtk.RESPONSE_CANCEL,
+		gtki.RESPONSE_CANCEL,
 		i18n.Local("_Export"),
-		gtk.RESPONSE_OK,
+		gtki.RESPONSE_OK,
 	)
 
 	dialog.SetCurrentName("otr.fingerprints")
 
-	if gtk.ResponseType(dialog.Run()) == gtk.RESPONSE_OK {
+	if gtki.ResponseType(dialog.Run()) == gtki.RESPONSE_OK {
 		ok := u.exportFingerprintsFor(account, dialog.GetFilename())
 		if ok {
 			u.notify(i18n.Local("Fingerprints exported"), i18n.Local("Fingerprints were exported correctly."))

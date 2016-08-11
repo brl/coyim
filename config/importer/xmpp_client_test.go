@@ -6,13 +6,17 @@ import (
 	"log"
 	"testing"
 
-	. "gopkg.in/check.v1"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/gotk3adapter/glib_mock"
+	"github.com/twstrike/coyim/i18n"
+
+	. "github.com/twstrike/coyim/Godeps/_workspace/src/gopkg.in/check.v1"
 )
 
 func Test(t *testing.T) { TestingT(t) }
 
 func init() {
 	log.SetOutput(ioutil.Discard)
+	i18n.InitLocalization(&glib_mock.Mock{})
 }
 
 type XmppClientXmppSuite struct{}
@@ -37,11 +41,10 @@ func (s *XmppClientXmppSuite) Test_XmppClient_canImportXmppClientConfiguration(c
 	c.Assert(res.Accounts[0].Password, Equals, "123547567846rghdfghdrghr6ythdt")
 	c.Assert(res.Accounts[0].Port, Equals, 5223)
 	c.Assert(res.Accounts[0].HideStatusUpdates, Equals, true)
-	c.Assert(res.Accounts[0].RequireTor, Equals, true)
 	c.Assert(res.Accounts[0].OTRAutoTearDown, Equals, true)
 	c.Assert(res.Accounts[0].OTRAutoAppendTag, Equals, true)
 	c.Assert(res.Accounts[0].OTRAutoStartSession, Equals, true)
-	c.Assert(res.Accounts[0].ServerCertificateSHA256, Equals, "592f46183527ab40838882ab4cb4aef4e2cf916074ab01f9bc243931ca5c4ed1")
+	c.Assert(res.Accounts[0].LegacyServerCertificateSHA256, Equals, "592f46183527ab40838882ab4cb4aef4e2cf916074ab01f9bc243931ca5c4ed1")
 	c.Assert(res.Accounts[0].PrivateKeys[0], DeepEquals, []byte{0x00, 0x10, 0x80, 0x04, 0x20, 0x01})
 	c.Assert(res.Accounts[0].AlwaysEncrypt, Equals, true)
 	c.Assert(res.Accounts[0].AlwaysEncryptWith, DeepEquals, []string(nil))

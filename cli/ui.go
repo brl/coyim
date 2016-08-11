@@ -19,18 +19,19 @@ import (
 	"github.com/twstrike/coyim/config"
 	"github.com/twstrike/coyim/servers"
 	sessions "github.com/twstrike/coyim/session/access"
+	"github.com/twstrike/coyim/tls"
 	"github.com/twstrike/coyim/xmpp/data"
 	xi "github.com/twstrike/coyim/xmpp/interfaces"
 
-	"github.com/twstrike/otr3"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/otr3"
 
-	"golang.org/x/net/proxy"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/golang.org/x/net/proxy"
 )
 
 type cliUI struct {
 	session        sessions.Session
 	sessionFactory sessions.Factory
-	dialerFactory  func() xi.Dialer
+	dialerFactory  func(tls.Verifier) xi.Dialer
 	events         chan interface{}
 	commands       chan interface{}
 
@@ -53,7 +54,7 @@ type UI interface {
 }
 
 // NewCLI creates a new cliUI instance
-func NewCLI(version string, cf terminal.ControlFactory, sf sessions.Factory, df func() xi.Dialer) UI {
+func NewCLI(version string, cf terminal.ControlFactory, sf sessions.Factory, df func(tls.Verifier) xi.Dialer) UI {
 	termControl := cf()
 	oldState, err := termControl.MakeRaw(0)
 	if err != nil {
@@ -161,7 +162,8 @@ func (c *cliUI) loadConfig(configFile string) error {
 	c.session.Subscribe(c.events)
 
 	c.session.SetConnectionLogger(logger)
-	if err := c.session.Connect(password); err != nil {
+	// TODO: this nil is incorrect and will cause failures when trying to use it.
+	if err := c.session.Connect(password, c.verifier()); err != nil {
 		c.alert(err.Error())
 		return err
 	}
@@ -684,10 +686,10 @@ CommandLoop:
 			case denyCommand:
 				s.HandleConfirmOrDeny(cmd.User, false /* deny */)
 			case addCommand:
-				s.RequestPresenceSubscription(cmd.User)
+				s.RequestPresenceSubscription(cmd.User, "")
 			case msgCommand:
 				message := []byte(cmd.msg)
-				conversation, exists := s.ConversationManager().GetConversationWith(cmd.to)
+				conversation, exists := s.ConversationManager().GetConversationWith(cmd.to, "")
 
 				if exists {
 					isEncrypted := conversation.IsEncrypted()
@@ -701,15 +703,15 @@ CommandLoop:
 					}
 				}
 
-				err := conversation.Send(s.Conn(), message)
+				err := conversation.Send(s, "", message)
 				if err != nil {
 					c.alert(err.Error())
 					break
 				}
 
 			case otrCommand:
-				conversation, _ := s.ConversationManager().GetConversationWith(string(cmd.User))
-				conversation.StartEncryptedChat(s)
+				conversation, _ := s.ConversationManager().GetConversationWith(string(cmd.User), "")
+				conversation.StartEncryptedChat(s, "")
 			case otrInfoCommand:
 				for _, pk := range s.PrivateKeys() {
 					c.info(fmt.Sprintf("Your OTR fingerprint is %x", pk.PublicKey().Fingerprint()))
@@ -722,14 +724,14 @@ CommandLoop:
 				}
 			case endOTRCommand:
 				to := string(cmd.User)
-				conversation, exists := s.ConversationManager().GetConversationWith(to)
+				conversation, exists := s.ConversationManager().GetConversationWith(to, "")
 
 				if !exists {
 					c.alert("No secure session established")
 					break
 				}
 
-				err := conversation.EndEncryptedChat(s)
+				err := conversation.EndEncryptedChat(s, "")
 				if err != nil {
 					c.alert("Can't end the conversation - it seems there is no randomness in your system. This could be a significant problem.")
 					break
@@ -739,7 +741,7 @@ CommandLoop:
 				c.warn("OTR conversation ended with " + cmd.User)
 			case authQACommand:
 				to := string(cmd.User)
-				conversation, exists := s.ConversationManager().GetConversationWith(to)
+				conversation, exists := s.ConversationManager().GetConversationWith(to, "")
 				if !exists {
 					c.alert("Can't authenticate without a secure conversation established")
 					break
@@ -747,9 +749,9 @@ CommandLoop:
 
 				if s.OtrEventHandler()[to].WaitingForSecret {
 					s.OtrEventHandler()[to].WaitingForSecret = false
-					err = conversation.ProvideAuthenticationSecret(s.Conn(), []byte(cmd.Secret))
+					err = conversation.ProvideAuthenticationSecret(s, "", []byte(cmd.Secret))
 				} else {
-					err = conversation.StartAuthenticate(s.Conn(), cmd.Question, []byte(cmd.Secret))
+					err = conversation.StartAuthenticate(s, "", cmd.Question, []byte(cmd.Secret))
 				}
 
 				if err != nil {
@@ -822,10 +824,9 @@ func (c *cliUI) enroll(conf *config.ApplicationConfig, currentConf *config.Accou
 	c.term.SetPrompt("Use Tor?: ")
 	if useTorQuery, err := c.term.ReadLine(); err != nil || len(useTorQuery) == 0 || !config.ParseYes(useTorQuery) {
 		c.info("Not using Tor...")
-		currentConf.RequireTor = false
+		currentConf.Proxies = []string{}
 	} else {
 		c.info("Using Tor...")
-		currentConf.RequireTor = true
 	}
 
 	c.term.SetPrompt("File to import libotr private key from (enter to generate): ")
@@ -866,7 +867,7 @@ func (c *cliUI) enroll(conf *config.ApplicationConfig, currentConf *config.Accou
 	currentConf.OTRAutoTearDown = false
 
 	// Force Tor for servers with well known Tor hidden services.
-	if _, ok := servers.Get(domain); ok && currentConf.RequireTor {
+	if _, ok := servers.Get(domain); ok && currentConf.HasTorAuto() {
 		const torProxyURL = "socks5://127.0.0.1:9050"
 		c.info("It appears that you are using a well known server and we will use its Tor hidden service to connect.")
 		currentConf.Proxies = []string{torProxyURL}
@@ -876,7 +877,7 @@ func (c *cliUI) enroll(conf *config.ApplicationConfig, currentConf *config.Accou
 
 	var proxyStr string
 	proxyDefaultPrompt := ", enter for none"
-	if currentConf.RequireTor {
+	if currentConf.HasTorAuto() {
 		proxyDefaultPrompt = ", which is the default"
 	}
 	c.term.SetPrompt("Proxy (i.e socks5://127.0.0.1:9050" + proxyDefaultPrompt + "): ")
@@ -886,7 +887,7 @@ func (c *cliUI) enroll(conf *config.ApplicationConfig, currentConf *config.Accou
 			return false
 		}
 		if len(proxyStr) == 0 {
-			if !currentConf.RequireTor {
+			if !currentConf.HasTorAuto() {
 				break
 			} else {
 				proxyStr = "socks5://127.0.0.1:9050"

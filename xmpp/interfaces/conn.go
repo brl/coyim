@@ -24,6 +24,7 @@ type Conn interface {
 	Next() (data.Stanza, error)
 	OriginDomain() string
 	Out() io.Writer
+	RawOut() io.WriteCloser
 	ReadStanzas(chan<- data.Stanza) error
 	RegisterAccount(string, string) (bool, error)
 	RequestRoster() (<-chan data.Stanza, data.Cookie, error)
@@ -31,9 +32,11 @@ type Conn interface {
 	SendIQ(string, string, interface{}) (chan data.Stanza, data.Cookie, error)
 	SendIQReply(string, string, string, interface{}) error
 	SendInitialStreamHeader() error
-	SendPresence(string, string, string) error
+	SendPresence(string, string, string, string) error
+	ServerAddress() string
 	SetInOut(*xml.Decoder, io.Writer)
 	SetKeepaliveOut(io.Writer)
 	SetRawOut(io.WriteCloser)
+	SetServerAddress(string)
 	SignalPresence(string) error
 }

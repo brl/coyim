@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/otr3"
 	"github.com/twstrike/coyim/config"
 	"github.com/twstrike/coyim/xmpp/utils"
-	"github.com/twstrike/otr3"
 )
 
 // ImportKeysFromPidginStyle will try to read keys in Pidgin style from the given file
@@ -101,7 +101,7 @@ func importAccountsPidginStyle(f string) (map[string]*config.Account, bool) {
 			a.Proxies = make([]string, 0)
 			for _, px := range ac.Proxy {
 				if px.Type == "tor" {
-					a.RequireTor = true
+					a.Proxies = append(a.Proxies, "tor-auto://")
 				}
 				a.Proxies = append(a.Proxies,
 					composeProxyString(px.Type, px.Username, px.Password, px.Host, strconv.Itoa(px.Port)),
@@ -110,10 +110,6 @@ func importAccountsPidginStyle(f string) (map[string]*config.Account, bool) {
 
 			if settings["connect_server"] != "" {
 				a.Server = settings["connect_server"]
-			}
-
-			if strings.HasSuffix(a.Server, ".onion") {
-				a.RequireTor = true
 			}
 
 			res[nm] = a

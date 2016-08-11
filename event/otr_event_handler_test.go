@@ -7,15 +7,18 @@ import (
 	"log"
 	"testing"
 
-	"github.com/twstrike/otr3"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/gotk3adapter/glib_mock"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/otr3"
+	"github.com/twstrike/coyim/i18n"
 
-	. "gopkg.in/check.v1"
+	. "github.com/twstrike/coyim/Godeps/_workspace/src/gopkg.in/check.v1"
 )
 
 func Test(t *testing.T) { TestingT(t) }
 
 func init() {
 	log.SetOutput(ioutil.Discard)
+	i18n.InitLocalization(&glib_mock.Mock{})
 }
 
 type OtrEventHandlerSuite struct{}
@@ -184,7 +187,7 @@ func (s *OtrEventHandlerSuite) Test_HandleMessageEvent_notifiesOnSeveralMessageE
 	c.Assert(<-nn, Equals, "We received this error from the other person: hmm this is weird.")
 
 	handler.HandleMessageEvent(otr3.MessageEventReceivedMessageNotInPrivate, nil, nil)
-	c.Assert(<-nn, Equals, "We received a an encrypted message which can't be read, since private communication is not currently turned on.")
+	c.Assert(<-nn, Equals, "We received an encrypted message which can't be read, since private communication is not currently turned on. You should ask your peer to repeat what they said.")
 
 	handler.HandleMessageEvent(otr3.MessageEventReceivedMessageUnencrypted, nil, nil)
 	c.Assert(<-nn, Equals, "We received a message that was transferred without encryption")

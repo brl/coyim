@@ -10,32 +10,28 @@ IN_FILES=$(shell find ../gui -name "*.go" ! -path "gui/definitions/*")
 # needed.
 DOMAIN=coy
 
-TEMPLATE_UI=$(DOMAIN)-ui.pot
-TEMPLATE_CODE=$(DOMAIN)-code.pot
-
 TRANSLATIONS=\
+	ar/LC_MESSAGES/$(DOMAIN).mo \
 	en_US/LC_MESSAGES/$(DOMAIN).mo \
 	pt_BR/LC_MESSAGES/$(DOMAIN).mo \
-	sv_SE/LC_MESSAGES/$(DOMAIN).mo
+	sv_SE/LC_MESSAGES/$(DOMAIN).mo \
+	zh_CN/LC_MESSAGES/$(DOMAIN).mo \
+	es_EC/LC_MESSAGES/$(DOMAIN).mo
 
-gettext: $(TEMPLATE_UI) $(TEMPLATE_CODE) $(TRANSLATIONS)
+gettext: $(TRANSLATIONS)
 
-$(TEMPLATE_UI): $(DEFINITIONS)
-	xgettext --package-name=$(DOMAIN) --default-domain=$(DOMAIN) --from-code=utf-8 -L glade $(DEFINITIONS) -o $(TEMPLATE_UI)
+$(DOMAIN).pot: $(DEFINITIONS) $(IN_FILES)
+	xgettext --package-name=$(DOMAIN) --default-domain=$(DOMAIN) --from-code=utf-8 -L glade $(DEFINITIONS) -o $(DOMAIN).pot
+	xgettext --package-name=$(DOMAIN) --default-domain=$(DOMAIN) --from-code=utf-8 -L python $(IN_FILES) --keyword=Local -j -o $(DOMAIN).pot
 
-$(TEMPLATE_CODE): $(IN_FILES)
-	xgettext --package-name=$(DOMAIN) --default-domain=$(DOMAIN) --from-code=utf-8 -L python $(IN_FILES) --keyword=Local -o $(TEMPLATE_CODE)
-
-%.po: $(TEMPLATE_UI) $(TEMPLATE_CODE)
-	./update-locales $(TEMPLATE_UI) $@
-	./update-locales $(TEMPLATE_CODE) $@
+%.po: $(DOMAIN).pot
+	./update-locales $(DOMAIN).pot $@
 
 %.mo: %.po
 	msgfmt -c -v -o $@ $<
 
-update-locales: $(TEMPLATE_UI) $(TEMPLATE_CODE)
-	./update-locales $(TEMPLATE_UI) $(TRANSLATIONS)
-	./update-locales $(TEMPLATE_CODE) $(TRANSLATIONS)
+update-locales: $(DOMAIN).pot
+	./update-locales $(DOMAIN).pot $(TRANSLATIONS)
 
 clean:
 	$(RM) $(TRANSLATIONS)

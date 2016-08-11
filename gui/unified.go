@@ -5,7 +5,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/gotk3/gotk3/gtk"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/gotk3adapter/gtki"
 )
 
 const (
@@ -24,36 +24,40 @@ var ulAllIndexValues = []int{0, 1, 2, 3, 4, 5, 6, 7}
 type unifiedLayout struct {
 	ui           *gtkUI
 	cl           *conversationList
-	leftPane     *gtk.Box
-	revealer     *gtk.Revealer
-	notebook     *gtk.Notebook
-	header       *gtk.Label
-	headerBox    *gtk.Box
-	close        *gtk.Button
+	headerBar    gtki.HeaderBar
+	leftPane     gtki.Box
+	rightPane    gtki.Box
+	notebook     gtki.Notebook
+	header       gtki.Label
+	headerBox    gtki.Box
+	close        gtki.Button
 	convsVisible bool
 	inPageSet    bool
+	isFullscreen bool
 	itemMap      map[int]*conversationStackItem
 }
 
 type conversationList struct {
 	layout *unifiedLayout
-	view   *gtk.TreeView
-	model  *gtk.ListStore
+	view   gtki.TreeView
+	model  gtki.ListStore
 }
 
 type conversationStackItem struct {
 	*conversationPane
-	pageIndex int
-	iter      *gtk.TreeIter
-	layout    *unifiedLayout
+	pageIndex      int
+	needsAttention bool
+	iter           gtki.TreeIter
+	layout         *unifiedLayout
 }
 
-func newUnifiedLayout(ui *gtkUI, left, parent *gtk.Box) *unifiedLayout {
+func newUnifiedLayout(ui *gtkUI, left, parent gtki.Box) *unifiedLayout {
 	ul := &unifiedLayout{
-		ui:       ui,
-		cl:       &conversationList{},
-		leftPane: left,
-		itemMap:  make(map[int]*conversationStackItem),
+		ui:           ui,
+		cl:           &conversationList{},
+		leftPane:     left,
+		itemMap:      make(map[int]*conversationStackItem),
+		isFullscreen: false,
 	}
 	ul.cl.layout = ul
 
@@ -61,8 +65,9 @@ func newUnifiedLayout(ui *gtkUI, left, parent *gtk.Box) *unifiedLayout {
 	builder.getItems(
 		"treeview", &ul.cl.view,
 		"liststore", &ul.cl.model,
+		"headerbar", &ul.headerBar,
 
-		"revealer", &ul.revealer,
+		"right", &ul.rightPane,
 		"notebook", &ul.notebook,
 		"header_label", &ul.header,
 		"header_box", &ul.headerBox,
@@ -73,17 +78,27 @@ func newUnifiedLayout(ui *gtkUI, left, parent *gtk.Box) *unifiedLayout {
 		"on_clicked":     ul.onCloseClicked,
 		"on_switch_page": ul.onSwitchPage,
 	})
-	parent.PackStart(ul.revealer, false, true, 0)
-	parent.SetChildPacking(left, false, true, 0, gtk.PACK_START)
+
+	connectShortcut("<Primary>Page_Down", ul.ui.window, ul.nextTab)
+	connectShortcut("<Primary>Page_Up", ul.ui.window, ul.previousTab)
+	connectShortcut("F11", ul.ui.window, ul.toggleFullscreen)
+
+	parent.PackStart(ul.rightPane, false, true, 0)
+	parent.SetChildPacking(ul.leftPane, false, true, 0, gtki.PACK_START)
+
 	ul.notebook.SetSizeRequest(500, -1)
-	ul.revealer.Hide()
-	left.SetHAlign(gtk.ALIGN_FILL)
+	ul.rightPane.Hide()
+
+	ul.ui.window.SetTitlebar(ul.headerBar)
+
+	left.SetHAlign(gtki.ALIGN_FILL)
 	left.SetHExpand(true)
 	return ul
 }
 
 func (ul *unifiedLayout) createConversation(account *account, uid string) conversationView {
-	cp := createConversationPane(account, uid, ul.ui, &ul.ui.window.Window)
+	cp := createConversationPane(account, uid, ul.ui, ul.ui.window)
+	cp.connectEnterHandler(nil)
 	cp.menubar.Hide()
 	idx := ul.notebook.AppendPage(cp.widget, nil)
 	if idx < 0 {
@@ -96,6 +111,10 @@ func (ul *unifiedLayout) createConversation(account *account, uid string) conver
 		layout:           ul,
 	}
 
+	//	csi.entry.SetHasFrame(true)
+	csi.entryScroll.SetMarginTop(5)
+	csi.entryScroll.SetMarginBottom(5)
+
 	ul.notebook.SetTabLabelText(cp.widget, csi.shortName())
 	ul.itemMap[idx] = csi
 	buffer, _ := csi.history.GetBuffer()
@@ -107,7 +126,8 @@ func (ul *unifiedLayout) createConversation(account *account, uid string) conver
 
 func (ul *unifiedLayout) onConversationChanged(csi *conversationStackItem) {
 	if ul.notebook.GetCurrentPage() != csi.pageIndex {
-		csi.setBold(true)
+		csi.needsAttention = true
+		csi.applyTextWeight()
 	}
 }
 
@@ -127,18 +147,19 @@ func (cl *conversationList) remove(csi *conversationStackItem) {
 }
 
 func (cl *conversationList) updateItem(csi *conversationStackItem) {
+	cs := cl.layout.ui.currentColorSet()
 	peer, ok := cl.layout.ui.getPeer(csi.account, csi.to)
 	if !ok {
 		log.Printf("No peer found for %s", csi.to)
 		return
 	}
-	cl.model.Set(csi.iter, ulAllIndexValues, []interface{}{
+	cl.model.Set2(csi.iter, ulAllIndexValues, []interface{}{
 		csi.pageIndex,
 		csi.shortName(),
 		peer.Jid,
-		decideColorFor(peer),
-		"#ffffff",
-		500,
+		decideColorFor(cs, peer),
+		cs.rosterPeerBackground,
+		csi.getTextWeight(),
 		createTooltipFor(peer),
 		statusIcons[decideStatusFor(peer)].getPixbuf(),
 	},
@@ -149,11 +170,10 @@ func (ul *unifiedLayout) showConversations() {
 	if ul.convsVisible {
 		return
 	}
-	ul.leftPane.SetHExpand(false)
-	ul.revealer.Show()
-	ul.revealer.SetHExpand(true)
-	ul.revealer.SetRevealChild(true)
 
+	ul.leftPane.SetHExpand(false)
+	ul.rightPane.SetHExpand(true)
+	ul.rightPane.Show()
 	ul.convsVisible = true
 }
 
@@ -163,12 +183,17 @@ func (ul *unifiedLayout) hideConversations() {
 	}
 	width := ul.leftPane.GetAllocatedWidth()
 	height := ul.ui.window.GetAllocatedHeight()
-	ul.revealer.SetRevealChild(false)
-	ul.revealer.SetHExpand(false)
-	ul.revealer.Hide()
+	ul.rightPane.SetHExpand(false)
+	ul.rightPane.Hide()
 	ul.leftPane.SetHExpand(true)
 	ul.ui.window.Resize(width, height)
 	ul.convsVisible = false
+	ul.headerBar.SetSubtitle("")
+}
+
+func (csi *conversationStackItem) isVisible() bool {
+	convoFrontMost := (csi.layout.notebook.GetCurrentPage() == csi.pageIndex)
+	return (convoFrontMost && csi.layout.ui.window.HasToplevelFocus())
 }
 
 func (csi *conversationStackItem) setEnabled(enabled bool) {
@@ -177,17 +202,28 @@ func (csi *conversationStackItem) setEnabled(enabled bool) {
 
 func (csi *conversationStackItem) shortName() string {
 	ss := strings.Split(csi.to, "@")
-	return ss[0]
+	uiName := ss[0]
+
+	peer, ok := csi.layout.ui.getPeer(csi.account, csi.to)
+	if ok && peer.NameForPresentation() != peer.Jid {
+		uiName = peer.NameForPresentation()
+	}
+
+	return uiName
 }
 
-func (csi *conversationStackItem) setBold(bold bool) {
+func (csi *conversationStackItem) getTextWeight() int {
+	if csi.needsAttention {
+		return 700
+	}
+	return 500
+}
+
+func (csi *conversationStackItem) applyTextWeight() {
 	if csi.iter == nil {
 		return
 	}
-	weight := 500
-	if bold {
-		weight = 700
-	}
+	weight := csi.getTextWeight()
 	csi.layout.cl.model.SetValue(csi.iter, ulIndexWeight, weight)
 }
 
@@ -201,15 +237,19 @@ func (csi *conversationStackItem) show(userInitiated bool) {
 		return
 	}
 	if csi.layout.notebook.GetCurrentPage() != csi.pageIndex {
-		csi.setBold(true)
+		csi.needsAttention = true
+		csi.applyTextWeight()
 	}
 }
 
 func (csi *conversationStackItem) bringToFront() {
 	csi.layout.showConversations()
-	csi.setBold(false)
+	csi.needsAttention = false
+	csi.applyTextWeight()
 	csi.layout.setCurrentPage(csi)
-	csi.layout.header.SetText(csi.to)
+	title := fmt.Sprintf("%s <-> %s", csi.account.session.GetConfig().Account, csi.to)
+	csi.layout.header.SetText(title)
+	csi.layout.headerBar.SetSubtitle(title)
 	csi.entry.GrabFocus()
 }
 
@@ -218,7 +258,7 @@ func (csi *conversationStackItem) remove() {
 	csi.widget.Hide()
 }
 
-func (cl *conversationList) getItemForIter(iter *gtk.TreeIter) *conversationStackItem {
+func (cl *conversationList) getItemForIter(iter gtki.TreeIter) *conversationStackItem {
 	val, err := cl.model.GetValue(iter, ulIndexID)
 	if err != nil {
 		log.Printf("Error getting ulIndexID value: %v", err)
@@ -226,13 +266,13 @@ func (cl *conversationList) getItemForIter(iter *gtk.TreeIter) *conversationStac
 	}
 	gv, err := val.GoValue()
 	if err != nil {
-		fmt.Printf("Error getting GoValue for ulIndexID: %v", err)
+		log.Printf("Error getting GoValue for ulIndexID: %v", err)
 		return nil
 	}
 	return cl.layout.itemMap[gv.(int)]
 }
 
-func (cl *conversationList) onActivate(v *gtk.TreeView, path *gtk.TreePath) {
+func (cl *conversationList) onActivate(v gtki.TreeView, path gtki.TreePath) {
 	iter, err := cl.model.GetIter(path)
 	if err != nil {
 		log.Printf("Error converting path to iter: %v", err)
@@ -246,9 +286,8 @@ func (cl *conversationList) onActivate(v *gtk.TreeView, path *gtk.TreePath) {
 
 func (cl *conversationList) removeSelection() {
 	ts, _ := cl.view.GetSelection()
-	var iter gtk.TreeIter
-	if ts.GetSelected(nil, &iter) {
-		path, _ := cl.model.GetPath(&iter)
+	if _, iter, ok := ts.GetSelected(); ok {
+		path, _ := cl.model.GetPath(iter)
 		ts.UnselectPath(path)
 	}
 }
@@ -275,7 +314,7 @@ func (ul *unifiedLayout) onCloseClicked() {
 	}
 }
 
-func (ul *unifiedLayout) onSwitchPage(notebook *gtk.Notebook, page *gtk.Widget, idx int) {
+func (ul *unifiedLayout) onSwitchPage(notebook gtki.Notebook, page gtki.Widget, idx int) {
 	if ul.inPageSet {
 		return
 	}
@@ -293,6 +332,41 @@ func (ul *unifiedLayout) displayFirstConvo() bool {
 		}
 	}
 	return false
+}
+
+func (ul *unifiedLayout) nextTab(gtki.Window) {
+	page := ul.notebook.GetCurrentPage()
+	np := (ul.notebook.GetNPages() - 1)
+	if page < 0 || np < 0 {
+		return
+	}
+	if page == np {
+		ul.notebook.SetCurrentPage(0)
+	} else {
+		ul.notebook.NextPage()
+	}
+}
+
+func (ul *unifiedLayout) previousTab(gtki.Window) {
+	page := ul.notebook.GetCurrentPage()
+	np := (ul.notebook.GetNPages() - 1)
+	if page < 0 || np < 0 {
+		return
+	}
+	if page > 0 {
+		ul.notebook.PrevPage()
+	} else {
+		ul.notebook.SetCurrentPage(np)
+	}
+}
+
+func (ul *unifiedLayout) toggleFullscreen(gtki.Window) {
+	if ul.isFullscreen {
+		ul.ui.window.Unfullscreen()
+	} else {
+		ul.ui.window.Fullscreen()
+	}
+	ul.isFullscreen = !ul.isFullscreen
 }
 
 func (ul *unifiedLayout) update() {

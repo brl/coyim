@@ -5,7 +5,10 @@ import (
 	"log"
 	"testing"
 
-	. "gopkg.in/check.v1"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/gotk3adapter/glib_mock"
+	"github.com/twstrike/coyim/i18n"
+
+	. "github.com/twstrike/coyim/Godeps/_workspace/src/gopkg.in/check.v1"
 )
 
 func Test(t *testing.T) { TestingT(t) }
@@ -19,6 +22,8 @@ type GUIXmppSuite struct{}
 var _ = Suite(&GUIXmppSuite{})
 
 func (s *GUIXmppSuite) Test_createStatusMessage_createsStatusMessages(c *C) {
+	i18n.InitLocalization(&glib_mock.Mock{})
+
 	c.Assert(createStatusMessage("Foo", "", "", false), Equals, "Foo is now Available")
 
 	c.Assert(createStatusMessage("Foo", "", "", true), Equals, "Foo is now Offline")

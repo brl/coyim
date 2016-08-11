@@ -1,23 +1,24 @@
 <interface>
-  <object class="GtkListStore" id="servers-model">
-    <columns>
-      <!-- server -->
-      <column type="gchararray"/>
-    </columns>
-    <data>
-      <row><col id="0">jabber.calyxinstitute.org</col></row>
-      <row><col id="0">dukgo.com</col></row>
-      <row><col id="0">jabber.ccc.de</col></row>
-    </data>
-  </object>
-
   <object class="GtkDialog" id="dialog">
     <property name="title" translatable="yes">Choose a server to register your account</property>
-    <signal name="close" handler="close-handler" />
+    <signal name="close" handler="on_cancel_signal" />
+    <signal name="delete-event" handler="on_cancel_signal" />
 
     <child internal-child="vbox">
       <object class="GtkBox" id="Vbox">
         <property name="margin">10</property>
+        <property name="spacing">10</property>
+        <child>
+          <object class="GtkLabel" id="message">
+            <property name="label" translatable="yes">Please choose the server where you want to register an account.</property>
+            <property name="wrap">true</property>
+          </object>
+          <packing>
+            <property name="expand">false</property>
+            <property name="fill">true</property>
+          </packing>
+        </child>
+
         <child>
           <object class="GtkGrid" id="grid">
             <property name="margin-bottom">10</property>
@@ -35,14 +36,8 @@
               </packing>
             </child>
             <child>
-              <object class="GtkComboBox" id="server">
-                <property name="model">servers-model</property>
-                <child>
-                  <object class="GtkCellRendererText" id="server-label-rendered"/>
-                  <attributes>
-                    <attribute name="text">0</attribute>
-                  </attributes>
-                </child>
+              <object class="GtkComboBoxText" id="server">
+                <property name="has-entry">True</property>
               </object>
               <packing>
                 <property name="left-attach">1</property>
@@ -58,12 +53,14 @@
             <child>
               <object class="GtkButton" id="btn-cancel">
                 <property name="label" translatable="yes">Cancel</property>
+                <signal name="clicked" handler="on_cancel_signal" />
               </object>
             </child>
             <child>
               <object class="GtkButton" id="btn-apply">
                 <property name="label" translatable="yes">Apply</property>
                 <property name="can-default">true</property>
+                <signal name="clicked" handler="on_save_signal" />
               </object>
             </child>
           </object>

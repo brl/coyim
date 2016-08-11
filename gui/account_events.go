@@ -1,10 +1,9 @@
 package gui
 
 import (
-	"fmt"
 	"log"
 
-	"github.com/gotk3/gotk3/gtk"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/gotk3adapter/gtki"
 	"github.com/twstrike/coyim/i18n"
 	"github.com/twstrike/coyim/session/events"
 	"github.com/twstrike/coyim/xmpp/utils"
@@ -52,11 +51,11 @@ func (u *gtkUI) handleLogEvent(ev events.Log) {
 
 	switch ev.Level {
 	case events.Info:
-		fmt.Println(">>> INFO", m)
+		log.Println(">>> INFO", m)
 	case events.Warn:
-		fmt.Println(">>> WARN", m)
+		log.Println(">>> WARN", m)
 	case events.Alert:
-		fmt.Println(">>> ALERT", m)
+		log.Println(">>> ALERT", m)
 	}
 }
 
@@ -69,7 +68,8 @@ func (u *gtkUI) handleMessageEvent(ev events.Message) {
 
 	u.roster.messageReceived(
 		account,
-		utils.RemoveResourceFromJid(ev.From),
+		ev.From,
+		ev.Resource,
 		ev.When,
 		ev.Encrypted,
 		ev.Body,
@@ -86,7 +86,7 @@ func (u *gtkUI) handleSessionEvent(ev events.Event) {
 		case events.Disconnected:
 			account.enableExistingConversationWindows(false)
 		case events.ConnectionLost:
-			u.notifyConnectionFailure(account)
+			u.notifyConnectionFailure(account, u.connectionFailureMoreInfoConnectionLost)
 			go u.connectWithRandomDelay(account)
 		case events.RosterReceived:
 			u.roster.update(account, ev.Session.R())
@@ -162,14 +162,14 @@ func (u *gtkUI) handlePeerEvent(ev events.Peer) {
 		})
 
 	case events.SubscriptionRequest:
-		confirmDialog := authorizePresenceSubscriptionDialog(&u.window.Window, ev.From)
+		confirmDialog := authorizePresenceSubscriptionDialog(u.window, ev.From)
 
 		doInUIThread(func() {
-			responseType := gtk.ResponseType(confirmDialog.Run())
+			responseType := gtki.ResponseType(confirmDialog.Run())
 			switch responseType {
-			case gtk.RESPONSE_YES:
+			case gtki.RESPONSE_YES:
 				ev.Session.HandleConfirmOrDeny(ev.From, true)
-			case gtk.RESPONSE_NO:
+			case gtki.RESPONSE_NO:
 				ev.Session.HandleConfirmOrDeny(ev.From, false)
 			default:
 				// We got a different response, such as a close of the window. In this case we want

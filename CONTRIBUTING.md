@@ -2,10 +2,11 @@
 Here's the brief:
 
 * We welcome contributions of all kinds, including but not limited to features, bug fixes, quality assurance, documentation, security review or asking questions
+* If you do not know how to code yet you can help us translating CoyIM thought [Zanata](https://translate.zanata.org/zanata/project/view/coyim)
 * Pull requests are based off, integrated into & rebased against master
 * Write automated tests, ideally using TDD. CI needs to be green in order to merge.
 * Contact us for questions & suggestions:
-  * IRC: #coyim @ chat.freenode.org ([join via webchat](https://webchat.freenode.net/))
+  * IRC: #coyim @ irc.oftc.net ([join via webchat](https://webchat.oftc.net))
   * Email: [coyim@thoughtworks.com](mailto:coyim@thoughtworks.com)
   * Twitter: [@coyproject](https://twitter.com/coyproject)
 
@@ -51,8 +52,6 @@ This is the lifecycle of a contribution. We follow a simplified fork + pull requ
 ### What to work on
 
 Generally, all issues that have no user assigned are awaiting work and free to play. If you want to make sure, or you think it will take more than a couple of days to complete your work, please reach out to us using the contact info above.
-
-TODO: add link to unassigned issues tagged as beginner
 
 ### Guidelines
 

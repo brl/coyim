@@ -1,8 +1,12 @@
 GTK_VERSION=$(shell pkg-config --modversion gtk+-3.0 | tr . _ | cut -d '_' -f 1-2)
 GTK_BUILD_TAG="gtk_$(GTK_VERSION)"
 GIT_VERSION=$(shell git rev-parse HEAD)
+TAG_VERSION=$(shell git tag -l --contains $$GIT_VERSION)
+GO_VERSION=$(shell go version | grep  -o 'go[[:digit:]]\.[[:digit:]]')
 
-default: deps gen-ui-defs lint test
+BUILD_DIR=bin
+
+default: gen-ui-defs gen-schema-defs lint test
 .PHONY: test
 
 build: build-cli build-gui
@@ -12,27 +16,38 @@ build: build-cli build-gui
 gen-ui-defs:
 	make -C ./gui/definitions
 
+gen-schema-defs:
+	make -C ./gui/settings/definitions
+
 build-gui: generate-version-file
-	go build -tags $(GTK_BUILD_TAG) -o bin/coyim
+	go build -i -tags $(GTK_BUILD_TAG) -o $(BUILD_DIR)/coyim
 
 build-gui-win: generate-version-file
-	go build -tags $(GTK_BUILD_TAG) -ldflags -H=windowsgui -o bin/coyim.exe
+	go build -i -tags $(GTK_BUILD_TAG) -ldflags -H=windowsgui -o $(BUILD_DIR)/coyim.exe
 
 build-cli: generate-version-file
-	go build -tags cli -o bin/coyim-cli
+	go build -i -tags cli -o $(BUILD_DIR)/coyim-cli
 
 build-debug:
-	go build -gcflags "-N -l" -tags $(GTK_BUILD_TAG) -o bin/coyim-debug
+	go build -i -gcflags "-N -l" -tags $(GTK_BUILD_TAG) -o $(BUILD_DIR)/coyim-debug
 
 debug: build-debug
-	gdb bin/coyim-debug -d $(shell go env GOROOT) -x build/debug
+	gdb $(BUILD_DIR)/coyim-debug -d $(shell go env GOROOT) -x build/debug
 
 i18n:
 	make -C i18n
 .PHONY: i18n
 
 lint:
+ifeq ($(GO_VERSION), go1.3)
+	echo "Your version of Go is too old for running lint. Skipping."
+else
+ifeq ($(GO_VERSION), go1.4)
+	echo "Your version of Go is too old for running lint. Skipping."
+else
 	golint ./...
+endif
+endif
 
 test:
 	go test -cover -v -tags $(GTK_BUILD_TAG) ./...
@@ -49,7 +64,7 @@ ifeq ($(shell uname), Linux)
 endif
 
 generate-version-file:
-	./gen_version_file.sh $(GIT_VERSION)
+	./gen_version_file.sh $(GIT_VERSION) $(TAG_VERSION)
 
 run-cover: clean-cover
 	mkdir -p .coverprofiles
@@ -58,6 +73,7 @@ run-cover: clean-cover
 	go test -coverprofile=.coverprofiles/config.coverprofile  ./config
 	go test -coverprofile=.coverprofiles/config_importer.coverprofile  ./config/importer
 	go test -coverprofile=.coverprofiles/event.coverprofile   ./event
+	go test -coverprofile=.coverprofiles/gui.coverprofile  ./gui
 	go test -coverprofile=.coverprofiles/i18n.coverprofile    ./i18n
 	go test -coverprofile=.coverprofiles/net.coverprofile     ./net
 	go test -coverprofile=.coverprofiles/roster.coverprofile  ./roster
@@ -71,12 +87,11 @@ run-cover: clean-cover
 	go test -coverprofile=.coverprofiles/xmpp_data.coverprofile    ./xmpp/data
 	go test -coverprofile=.coverprofiles/xmpp_utils.coverprofile    ./xmpp/utils
 	go test -coverprofile=.coverprofiles/ui.coverprofile      ./ui
-	go test -tags $(GTK_BUILD_TAG) -coverprofile=.coverprofiles/gui.coverprofile  ./gui
 	go test -tags $(GTK_BUILD_TAG) -coverprofile=.coverprofiles/main.coverprofile
 	gover .coverprofiles .coverprofiles/gover.coverprofile
 
 clean-cover:
-	$(RM) -rf .coverprofiles 
+	$(RM) -rf .coverprofiles
 
 # generats an HTML report with coverage information
 cover: run-cover
@@ -85,41 +100,17 @@ cover: run-cover
 get:
 	go get -t -tags $(GTK_BUILD_TAG) ./...
 
-deps-u:
-	go get -u github.com/golang/lint/golint
-	go get -u golang.org/x/tools/cmd/cover
-	go get -u github.com/modocache/gover
-	go get -u -tags $(GTK_BUILD_TAG) github.com/gotk3/gotk3/gtk
-	go get -u github.com/twstrike/otr3
-	go get -u github.com/twstrike/otr3/sexp
-	go get -u golang.org/x/crypto/ssh/terminal
-	go get -u golang.org/x/net/html
-	go get -u golang.org/x/net/html/atom
-	go get -u golang.org/x/net/proxy
-	go get -u golang.org/x/text/transform
-	go get -u gopkg.in/check.v1
-	go get -u github.com/miekg/dns
-	go get -u golang.org/x/crypto/scrypt
-	go get -u github.com/hydrogen18/stalecucumber
-	go get -u github.com/DHowett/go-plist
-
 deps-dev:
+ifeq ($(GO_VERSION), go1.3)
+else
+ifeq ($(GO_VERSION), go1.4)
+else
 	go get github.com/golang/lint/golint
+endif
+endif
 	go get golang.org/x/tools/cmd/cover
 	go get github.com/modocache/gover
+	go get github.com/tools/godep
 
 deps: deps-dev
-	go get -tags $(GTK_BUILD_TAG) github.com/gotk3/gotk3/gtk
-	go get github.com/twstrike/otr3
-	go get github.com/twstrike/otr3/sexp
-	go get golang.org/x/crypto/ssh/terminal
-	go get golang.org/x/net/html
-	go get golang.org/x/net/html/atom
-	go get golang.org/x/net/proxy
-	go get golang.org/x/text/transform
-	go get gopkg.in/check.v1
-	go get github.com/miekg/dns
-	go get golang.org/x/crypto/scrypt
-	go get github.com/hydrogen18/stalecucumber
-	go get github.com/DHowett/go-plist
-
+	godep restore

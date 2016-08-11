@@ -4,110 +4,137 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/gotk3/gotk3/glib"
-	"github.com/gotk3/gotk3/gtk"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/gotk3adapter/gtki"
 	"github.com/twstrike/coyim/i18n"
 )
 
-func authorizePresenceSubscriptionDialog(parent *gtk.Window, from string) *gtk.MessageDialog {
-	builder := builderForDefinition("AuthorizeSubscription")
+func authorizePresenceSubscriptionDialog(parent gtki.Window, from string) gtki.MessageDialog {
+	builder := newBuilder("AuthorizeSubscription")
 
-	obj, _ := builder.GetObject("dialog")
-	confirmDialog := obj.(*gtk.MessageDialog)
-
+	confirmDialog := builder.getObj("dialog").(gtki.MessageDialog)
 	text := fmt.Sprintf(i18n.Local("%s wants to talk to you. Is that ok?"), from)
 	confirmDialog.SetProperty("text", text)
-
 	confirmDialog.SetTransientFor(parent)
+
 	return confirmDialog
 }
 
-func presenceSubscriptionDialog(accounts []*account, sendSubscription func(accountID, peer string) error) *gtk.Dialog {
-	builder := builderForDefinition("AddContact")
+type addContactDialog struct {
+	builder                *builder
+	dialog                 gtki.Window
+	model                  gtki.ListStore
+	accountInput           gtki.ComboBox
+	contactInput           gtki.Entry
+	notificationArea       gtki.Box
+	notification           gtki.InfoBar
+	subscriptionAskMessage gtki.TextBuffer
+	nickname               gtki.Entry
+	autoAuth               gtki.CheckButton
+}
 
-	//TODO: move model to XML builder
-	model, _ := gtk.ListStoreNew(
-		glib.TYPE_STRING, // account name
-		glib.TYPE_STRING, // account_id
-	)
+func (acd *addContactDialog) getVerifiedContact() (string, bool) {
+	contact, _ := acd.contactInput.GetText()
+	isJid, errmsg := verifyXmppAddress(contact)
 
-	for _, acc := range accounts {
-		model.Set(model.Append(), []int{0, 1}, []interface{}{acc.session.GetConfig().Account, acc.session.GetConfig().ID()})
+	if !isJid {
+		if acd.notification != nil {
+			acd.notificationArea.Remove(acd.notification)
+		}
+		acd.notification = buildBadUsernameNotification(errmsg)
+		acd.notificationArea.Add(acd.notification)
+		acd.notification.ShowAll()
+		log.Printf(errmsg)
+		return "", false
 	}
 
-	accountsObj, _ := builder.GetObject("accounts")
-	accountInput := accountsObj.(*gtk.ComboBox)
-	accountInput.SetModel(&model.TreeModel)
+	return contact, true
+}
 
-	accountObj, _ := builder.GetObject("address")
-	contactInput := accountObj.(*gtk.Entry)
+func (acd *addContactDialog) getCurrentAccount() (string, error) {
+	iter, err := acd.accountInput.GetActiveIter()
+	if err != nil {
+		return "", err
+	}
+	val, err := acd.model.GetValue(iter, 1)
+	if err != nil {
+		return "", err
+	}
+	return val.GetString()
+}
+
+func (acd *addContactDialog) getCurrentMessage() string {
+	return acd.subscriptionAskMessage.GetText(
+		acd.subscriptionAskMessage.GetStartIter(),
+		acd.subscriptionAskMessage.GetEndIter(),
+		false,
+	)
+}
+
+func (acd *addContactDialog) getCurrentNickname() string {
+	txt, _ := acd.nickname.GetText()
+	return txt
+}
+
+func (acd *addContactDialog) getAutoAuthorize() bool {
+	return acd.autoAuth.GetActive()
+}
+
+func (acd *addContactDialog) initAccounts(accounts []*account) {
+	for _, acc := range accounts {
+		iter := acd.model.Append()
+		acd.model.SetValue(iter, 0, acc.session.GetConfig().Account)
+		acd.model.SetValue(iter, 1, acc.session.GetConfig().ID())
+	}
 
 	if len(accounts) > 0 {
-		accountInput.SetActive(0)
+		acd.accountInput.SetActive(0)
 	}
+}
 
-	renderer, _ := gtk.CellRendererTextNew()
-	accountInput.PackStart(renderer, true)
-	accountInput.AddAttribute(renderer, "text", 0)
+func (acd *addContactDialog) init() {
+	acd.builder = newBuilder("AddContact")
+	acd.builder.getItems(
+		"AddContact", &acd.dialog,
+		"accounts-model", &acd.model,
+		"accounts", &acd.accountInput,
+		"notification-area", &acd.notificationArea,
+		"address", &acd.contactInput,
+		"subscriptionAskMessage", &acd.subscriptionAskMessage,
+		"nickname", &acd.nickname,
+		"auto_authorize_checkbutton", &acd.autoAuth,
+	)
+}
 
-	dialogObj, _ := builder.GetObject("AddContact")
-	dialog := dialogObj.(*gtk.Dialog)
+func presenceSubscriptionDialog(accounts []*account, sendSubscription func(accountID, peer, msg, nick string, autoauth bool) error) gtki.Window {
+	acd := &addContactDialog{}
+	acd.init()
+	acd.initAccounts(accounts)
 
-	obj, _ := builder.GetObject("notification-area")
-	notificationArea := obj.(*gtk.Box)
-
-	failures := 0
-	var notification *gtk.InfoBar
-
-	builder.ConnectSignals(map[string]interface{}{
+	acd.builder.ConnectSignals(map[string]interface{}{
+		"on_close_signal": func() {
+			acd.dialog.Destroy()
+		},
 		"on_save_signal": func() {
-			contact, _ := contactInput.GetText()
-			isJid, errmsg := verifyXmppAddress(contact)
-
-			if !isJid && failures > 0 {
-				notificationArea.Remove(notification)
-				notification = buildBadUsernameNotification(errmsg)
-				notificationArea.Add(notification)
-				notification.ShowAll()
-				failures++
-				log.Printf(errmsg)
+			contact, ok := acd.getVerifiedContact()
+			if !ok {
 				return
 			}
 
-			if !isJid {
-				notification = buildBadUsernameNotification(errmsg)
-				notificationArea.Add(notification)
-				notification.ShowAll()
-				failures++
-				log.Printf(errmsg)
-				return
-			}
-
-			iter, err := accountInput.GetActiveIter()
-			if err != nil {
-				log.Printf("Error encountered when getting account: %v", err)
-				return
-			}
-			val, err := model.GetValue(iter, 1)
-			if err != nil {
-				log.Printf("Error encountered when getting account: %v", err)
-				return
-			}
-			accountID, err := val.GetString()
+			accountID, err := acd.getCurrentAccount()
 			if err != nil {
 				log.Printf("Error encountered when getting account: %v", err)
 				return
 			}
 
-			err = sendSubscription(accountID, contact)
+			err = sendSubscription(accountID, contact, acd.getCurrentMessage(), acd.getCurrentNickname(), acd.getAutoAuthorize())
 			if err != nil {
 				log.Printf("Error encountered when sending subscription: %v", err)
 				return
 			}
 
-			dialog.Destroy()
+			acd.dialog.Destroy()
 		},
 	})
 
-	return dialog
+	return acd.dialog
 }

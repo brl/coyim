@@ -8,10 +8,11 @@ import (
 	"github.com/twstrike/coyim/config"
 	"github.com/twstrike/coyim/event"
 	"github.com/twstrike/coyim/roster"
+	"github.com/twstrike/coyim/tls"
 	"github.com/twstrike/coyim/xmpp/data"
 	xi "github.com/twstrike/coyim/xmpp/interfaces"
 
-	"github.com/twstrike/otr3"
+	"github.com/twstrike/coyim/Godeps/_workspace/src/github.com/twstrike/otr3"
 )
 
 // EventHandler represents the main notifications that the session can emit
@@ -28,15 +29,16 @@ type Connector interface {
 // Session is an interface that defines the functionality of a Session
 type Session interface {
 	ApprovePresenceSubscription(string, string) error
+	AutoApprove(string)
 	AwaitVersionReply(<-chan data.Stanza, string)
 	Close()
 	CommandManager() client.CommandManager
 	Config() *config.ApplicationConfig
 	Conn() xi.Conn
-	Connect(string) error
+	Connect(string, tls.Verifier) error
 	ConversationManager() client.ConversationManager
 	DenyPresenceSubscription(string, string) error
-	EncryptAndSendTo(string, string) error
+	EncryptAndSendTo(string, string, string) error
 	GetConfig() *config.Account
 	GroupDelimiter() string
 	HandleConfirmOrDeny(string, bool)
@@ -47,8 +49,8 @@ type Session interface {
 	R() *roster.List
 	ReloadKeys()
 	RemoveContact(string)
-	RequestPresenceSubscription(string) error
-	Send(string, string) error
+	RequestPresenceSubscription(string, string) error
+	Send(string, string, string) error
 	SetCommandManager(client.CommandManager)
 	SetConnectionLogger(io.Writer)
 	SetConnector(Connector)
@@ -60,4 +62,4 @@ type Session interface {
 }
 
 // Factory is a function that can create new Sessions
-type Factory func(*config.ApplicationConfig, *config.Account, func() xi.Dialer) Session
+type Factory func(*config.ApplicationConfig, *config.Account, func(tls.Verifier) xi.Dialer) Session
