@@ -1,0 +1,24 @@
+Source: coyim
+Section: net
+Priority: optional
+Maintainer: Bruce Leidl <bruce@subgraph.com>
+Build-Depends: debhelper (>= 9),
+               dh-golang,
+               golang-go
+Standards-Version: 3.9.6
+Homepage: https://github.com/twstrike/coyim
+Vcs-Git: https://github.com/brl/coyim.git
+XS-Go-Import-Path: github.com/twstrike/coyim
+
+Package: coyim
+Architecture: any
+Built-Using: ${misc:Built-Using}
+Depends: ${shlibs:Depends},
+         ${misc:Depends}
+Description: a safe and secure chat client
+ CoyIM is a new client for the XMPP protocol. It is built upon 
+ https://github.com/agl/xmpp-client and https://github.com/twstrike/otr3. 
+ It adds a graphical user interface and tries to be safe and secure by 
+ default. Our ambition is that it should be possible for even the most 
+ high-risk people on the planet to safely use CoyIM, without having to 
+ make any configuration changes.      

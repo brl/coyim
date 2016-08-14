@@ -1,0 +1,7 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=CoyIM Messenger
+Icon=coyim
+Exec=/usr/bin/coyim
+Terminal=false
